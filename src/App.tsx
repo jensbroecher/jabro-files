@@ -125,6 +125,7 @@ export default function App() {
   const [rightSortDir, setRightSortDir] = useState<'asc' | 'desc'>('asc');
   const [rightHistory, setRightHistory] = useState<string[]>(['H:\\']);
   const [rightHistoryIndex, setRightHistoryIndex] = useState(0);
+  const [activePane, setActivePane] = useState<'left' | 'right'>('left');
 
   // Load directory contents
   const loadDirectory = useCallback(async (path: string) => {
@@ -316,8 +317,16 @@ export default function App() {
 
       setSizeCache(prev => ({ ...prev, [targetPath]: result }));
 
-      // Update row in place if visible
+      // Update row in place if visible (left)
       setEntries(prev =>
+        prev.map(e =>
+          e.path === targetPath && e.isDirectory
+            ? { ...e, size: result.size, fileCount: result.fileCount, dirCount: result.dirCount }
+            : e
+        )
+      );
+      // Also sync right pane rows if dual
+      setRightEntries(prev =>
         prev.map(e =>
           e.path === targetPath && e.isDirectory
             ? { ...e, size: result.size, fileCount: result.fileCount, dirCount: result.dirCount }
@@ -351,21 +360,28 @@ export default function App() {
   }, [selected]);
 
   const pasteFromClipboard = useCallback(async () => {
-    if (!clipboard || !currentPath) return;
+    if (!clipboard) return;
+    const targetIsRight = dualPane && activePane === 'right';
+    const targetPath = targetIsRight ? rightCurrentPath : currentPath;
+    if (!targetPath) return;
     try {
       if (isElectron && api) {
         if (clipboard.isCut) {
-          await api.moveFiles(clipboard.paths, currentPath);
+          await api.moveFiles(clipboard.paths, targetPath);
           setClipboard(null);
         } else {
-          await api.copyFiles(clipboard.paths, currentPath);
+          await api.copyFiles(clipboard.paths, targetPath);
         }
-        await loadDirectory(currentPath);
+        if (targetIsRight) {
+          await loadRightDirectory(targetPath);
+        } else {
+          await loadDirectory(targetPath);
+        }
       }
     } catch (err) {
       console.error('Paste failed', err);
     }
-  }, [clipboard, currentPath, loadDirectory]);
+  }, [clipboard, currentPath, rightCurrentPath, dualPane, activePane, loadDirectory, loadRightDirectory]);
 
   const refresh = useCallback(() => {
     // Invalidate sizes for current level's folders? Keep cache for speed, user can force per item.
@@ -396,7 +412,10 @@ export default function App() {
   };
 
   // Row interactions
-  const onRowClick = (entry: DirEntry) => setSelected(entry.path);
+  const onRowClick = (entry: DirEntry) => {
+    setSelected(entry.path);
+    setActivePane('left');
+  };
   const onRowDoubleClick = (entry: DirEntry) => openEntry(entry);
 
   // Processed + sorted + filtered list
@@ -548,17 +567,26 @@ export default function App() {
 
   const selectedEntry = entries.find(e => e.path === selected);
 
-  const onRightRowClick = (entry: DirEntry) => setRightSelected(entry.path);
+  const onRightRowClick = (entry: DirEntry) => {
+    setRightSelected(entry.path);
+    setActivePane('right');
+  };
   const onRightRowDoubleClick = (entry: DirEntry) => {
+    setActivePane('right');
     if (entry.isDirectory) navigateRight(entry.path);
   };
 
   return (
     <div className="app-container flex flex-col h-screen text-sm select-none bg-[#0f0f10] text-[#e5e5e7]">
-      {/* Top controls (titlebar area is handled by Electron overlay when packaged) */}
-      <div className="flex items-center gap-1.5 px-2 py-1.5 bg-[#18181b] border-b border-zinc-800" style={{ WebkitAppRegion: 'drag' } as any}>
+      {/* Top controls (titlebar area is handled by Electron overlay when packaged).
+          All custom buttons are on the LEFT so they don't get covered by the OS min/max/close controls on the right. */}
+      <div
+        className="flex items-center gap-1.5 px-2 pr-8 bg-[#18181b] border-b border-zinc-800"
+        style={{ WebkitAppRegion: 'drag', height: '40px' } as any}
+      >
         <div className="px-1.5 text-[10px] tracking-[1px] text-zinc-500 font-semibold select-none">JABROFILES</div>
 
+        {/* All buttons clustered on the left, away from the system window controls (min/max/close) */}
         <button onClick={goBack} disabled={historyIndex === 0} className="nav-button" title="Back (Backspace in list)" style={{ WebkitAppRegion: 'no-drag' } as any}>
           <ArrowLeft size={15} />
         </button>
@@ -572,7 +600,8 @@ export default function App() {
           <RefreshCw size={14} />
         </button>
 
-        <div className="flex-1" style={{ WebkitAppRegion: 'drag' } as any} />
+        {/* small visual gap between nav and actions */}
+        <div className="w-2" />
 
         <button
           onClick={() => setAutoCalc(!autoCalc)}
@@ -587,17 +616,31 @@ export default function App() {
         </button>
 
         <button 
-          onClick={() => setDualPane(!dualPane)} 
-          className={`nav-button ${dualPane ? 'bg-blue-600 text-white' : ''}`} 
-          title="Toggle dual pane mode" 
-          style={{ WebkitAppRegion: 'no-drag' } as any}
+          onClick={() => {
+            const next = !dualPane;
+            setDualPane(next);
+            if (next && rightEntries.length === 0) {
+              loadRightDirectory(rightCurrentPath);
+            }
+            setActivePane(next ? 'right' : 'left');
+          }} 
+          className={`nav-button flex items-center gap-1 ${dualPane ? 'bg-blue-600 text-white' : 'ring-1 ring-blue-400/60 text-blue-300'}`} 
+          style={{ WebkitAppRegion: 'no-drag', width: 'auto', minWidth: '66px', padding: '0 6px' } as any}
+          title="Toggle dual pane / second page (split view) — click to open the second pane"
         >
-          <span className="text-xs">⧉</span>
+          <span className="text-[10px] font-bold tracking-tighter">||</span>
+          <span className="text-[10px] font-semibold">Split</span>
         </button>
 
         <button onClick={pickFolder} className="nav-button" title="Choose a folder to browse" style={{ WebkitAppRegion: 'no-drag' } as any}>
           <FolderOpen size={15} />
         </button>
+
+        {/* breathing room so the last button isn't under the OS min/max/close overlay controls on the right */}
+        <div className="w-10" style={{ WebkitAppRegion: 'drag' } as any} />
+
+        {/* Draggable area on the RIGHT (under the OS min/max/close overlay controls) */}
+        <div className="flex-1 h-full" style={{ WebkitAppRegion: 'drag' } as any} />
       </div>
 
       {/* Path bar */}
@@ -681,9 +724,11 @@ export default function App() {
             </button>
           </div>
 
-          {/* The list */}
-          <div className="file-list flex-1 overflow-auto">
-            <div className="file-list h-full">
+          {/* The list area - supports dual pane ("second page") */}
+          <div className={`flex-1 overflow-hidden ${dualPane ? 'flex flex-row' : ''}`}>
+            {/* Left pane */}
+            <div className={`overflow-auto ${dualPane ? 'w-1/2 border-r border-zinc-800' : 'file-list flex-1'} ${dualPane && activePane === 'left' ? 'ring-1 ring-inset ring-blue-500/30' : ''}`}>
+              <div className="file-list h-full">
                 {isLoading ? (
                   <div className="h-full flex items-center justify-center text-zinc-500">
                     <RefreshCw className="spinner mr-2" size={18} /> Loading…
@@ -753,9 +798,43 @@ export default function App() {
               </div>
             </div>
 
-
-
-
+            {/* Right pane (the "second page") */}
+            {dualPane && (
+              <div className={`w-1/2 flex flex-col overflow-hidden ${activePane === 'right' ? 'ring-1 ring-inset ring-blue-500/30' : ''}`}>
+                <div className="h-8 px-2 flex items-center gap-1 bg-[#111113] border-b border-zinc-800 text-xs flex-shrink-0">
+                  <button onClick={goRightBack} className="px-1 hover:bg-zinc-800 rounded" title="Back">←</button>
+                  <button onClick={goRightForward} className="px-1 hover:bg-zinc-800 rounded" title="Forward">→</button>
+                  <button onClick={goRightUp} className="px-1 hover:bg-zinc-800 rounded" title="Up">↑</button>
+                  <div className="flex-1 truncate font-mono text-[10px] px-1" title={rightCurrentPath}>{rightCurrentPath}</div>
+                  <input
+                    className="text-[10px] bg-zinc-900 border border-zinc-700 rounded px-1 py-0.5 w-24 ml-1"
+                    placeholder="filter…"
+                    value={rightFilter}
+                    onChange={e => setRightFilter(e.target.value)}
+                    onClick={e => e.stopPropagation()}
+                  />
+                  <button onClick={() => loadRightDirectory(rightCurrentPath)} className="px-1 hover:bg-zinc-800 rounded" title="Refresh">⟳</button>
+                </div>
+                <div className="file-list flex-1 overflow-auto">
+                  {isRightLoading ? (
+                    <div className="h-full flex items-center justify-center text-zinc-500">
+                      <RefreshCw className="spinner mr-2" size={18} /> Loading…
+                    </div>
+                  ) : rightVisibleEntries.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center text-zinc-500 gap-2">
+                      <Folder size={40} />
+                      <div>Empty</div>
+                    </div>
+                  ) : (
+                    <table className="w-full">
+                      <thead>
+                        <tr>
+                          <th onClick={() => toggleRightSort('name')} className="sortable w-[52%] text-left">Name {rightSortBy === 'name' ? (rightSortDir === 'asc' ? '▲' : '▼') : ''}</th>
+                          <th onClick={() => toggleRightSort('size')} className="sortable w-36 text-right pr-4">Size {rightSortBy === 'size' ? (rightSortDir === 'asc' ? '▲' : '▼') : ''}</th>
+                          <th onClick={() => toggleRightSort('mtime')} className="sortable w-40">Date modified {rightSortBy === 'mtime' ? (rightSortDir === 'asc' ? '▲' : '▼') : ''}</th>
+                          <th>Kind</th>
+                        </tr>
+                      </thead>
                       <tbody>
                         {rightVisibleEntries.map(entry => {
                           const cached = sizeCache[entry.path];
@@ -806,6 +885,7 @@ export default function App() {
                 </div>
               </div>
             )}
+          </div>
 
           {/* Status bar */}
           <div className="statusbar h-7 px-3 text-xs bg-[#18181b] border-t border-zinc-800 flex items-center gap-x-4 text-zinc-400">

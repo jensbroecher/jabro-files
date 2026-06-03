@@ -1,7 +1,7 @@
 {
   "name": "jabrofiles",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "JabroFiles",
   "type": "module",
   "description": "JabroFiles - A fast local file browser with recursive folder sizes for Windows",
