@@ -1,0 +1,265 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: #0f0f10;
+  color: #e5e5e7;
+  margin: 0;
+  overflow: hidden;
+}
+
+/* Win11-ish dark theme */
+.app-container {
+  background: #0f0f10;
+}
+
+.titlebar {
+  -webkit-app-region: drag;
+  height: 40px;
+  background: #18181b;
+  border-bottom: 1px solid #27272a;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  gap: 8px;
+  user-select: none;
+}
+
+.nav-button {
+  -webkit-app-region: no-drag;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: #a1a1aa;
+  transition: all 0.1s;
+}
+
+.nav-button:hover:not(:disabled) {
+  background: #27272a;
+  color: #f4f4f5;
+}
+
+.nav-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.path-bar {
+  -webkit-app-region: no-drag;
+  flex: 1;
+  background: #18181b;
+  border: 1px solid #27272a;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  color: #d4d4d8;
+  outline: none;
+}
+
+.path-bar:focus {
+  border-color: #3b82f6;
+  background: #1f1f23;
+}
+
+.file-list {
+  flex: 1;
+  overflow: auto;
+  background: #0f0f10;
+}
+
+.file-list table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.file-list th {
+  position: sticky;
+  top: 0;
+  background: #18181b;
+  text-align: left;
+  font-weight: 500;
+  color: #a1a1aa;
+  padding: 10px 12px;
+  border-bottom: 1px solid #27272a;
+  user-select: none;
+  z-index: 10;
+}
+
+.file-list th.sortable {
+  cursor: pointer;
+}
+
+.file-list th.sortable:hover {
+  color: #e4e4e7;
+}
+
+.file-list td {
+  padding: 6px 12px;
+  border-bottom: 1px solid #1f1f23;
+  white-space: nowrap;
+}
+
+.file-row {
+  cursor: default;
+  transition: background 0.05s;
+}
+
+.file-row:hover {
+  background: #18181b;
+}
+
+.file-row.selected {
+  background: #1e3a8a33;
+}
+
+.file-row .name-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 400;
+}
+
+.file-icon {
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.size-cell {
+  font-variant-numeric: tabular-nums;
+  color: #a1a1aa;
+}
+
+.size-cell.calculating {
+  color: #60a5fa;
+}
+
+.sidebar {
+  width: 220px;
+  background: #111113;
+  border-right: 1px solid #27272a;
+  overflow: auto;
+  flex-shrink: 0;
+}
+
+.sidebar-section {
+  padding: 8px 0;
+}
+
+.sidebar-header {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #52525b;
+  padding: 4px 12px 2px;
+  font-weight: 600;
+}
+
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 13px;
+  color: #d4d4d8;
+  cursor: pointer;
+  border-radius: 4px;
+  margin: 0 6px;
+}
+
+.sidebar-item:hover {
+  background: #1f1f23;
+}
+
+.sidebar-item.active {
+  background: #27272a;
+  color: #fff;
+}
+
+.statusbar {
+  height: 28px;
+  background: #18181b;
+  border-top: 1px solid #27272a;
+  font-size: 12px;
+  color: #71717a;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  gap: 16px;
+  flex-shrink: 0;
+}
+
+.context-menu {
+  position: fixed;
+  background: #18181b;
+  border: 1px solid #3f3f46;
+  border-radius: 8px;
+  box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.3);
+  padding: 4px 0;
+  min-width: 180px;
+  z-index: 9999;
+  font-size: 13px;
+}
+
+.context-menu-item {
+  padding: 8px 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.context-menu-item:hover {
+  background: #27272a;
+}
+
+.context-menu-item.danger {
+  color: #f87171;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: #52525b;
+  gap: 12px;
+}
+
+.spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Nice scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: #111113;
+}
+::-webkit-scrollbar-thumb {
+  background: #3f3f46;
+  border-radius: 5px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #52525b;
+}

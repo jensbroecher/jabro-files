@@ -1,0 +1,66 @@
+{
+  "name": "jabrofiles",
+  "private": true,
+  "version": "0.1.0",
+  "author": "JabroFiles",
+  "type": "module",
+  "description": "JabroFiles - A fast local file browser with recursive folder sizes for Windows",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "electron:dev": "electron .",
+    "electron:build": "npm run build && electron-builder",
+    "start": "npm run electron:dev"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.8",
+    "@types/node": "^25.9.1",
+    "@types/react": "^19.2.16",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3",
+    "esbuild": "^0.28.0",
+    "tailwindcss": "^4.1.8",
+    "typescript": "~6.0.2",
+    "vite": "^8.0.12",
+    "vite-plugin-electron": "^0.28.8",
+    "vite-plugin-electron-renderer": "^0.14.6"
+  },
+  "dependencies": {
+    "lucide-react": "^0.513.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "main": "dist-electron/main.js",
+  "build": {
+    "appId": "com.jabrofiles.app",
+    "productName": "JabroFiles",
+    "icon": "build/icon.png",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*"
+    ],
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    }
+  }
+}
