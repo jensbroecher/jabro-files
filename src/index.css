@@ -71,7 +71,8 @@ body {
 
 .file-list {
   flex: 1;
-  overflow: auto;
+  overflow-x: hidden; /* prevent unwanted horizontal scrollbar from table content or borders */
+  overflow-y: auto;
   background: #0f0f10;
   scrollbar-gutter: stable; /* reserve space for scrollbar to prevent layout shift / flickering when it appears/disappears */
 }
@@ -84,8 +85,10 @@ body {
 
 .file-list table {
   width: 100%;
+  max-width: 100%;
   border-collapse: collapse;
   font-size: 13px;
+  table-layout: fixed; /* consistent column widths across folders and panes, prevents shift and horiz scroll */
 }
 
 .file-list th {

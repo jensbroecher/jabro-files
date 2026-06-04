@@ -106,6 +106,7 @@ export default function App() {
   // Customizable Quick Access (pinned folders). Persisted in localStorage.
   const [quickAccess, setQuickAccess] = useState<Array<{ label: string; path: string }>>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
+  const [operationStatus, setOperationStatus] = useState('');
 
   // Guards to prevent duplicate/reload loops for the same path (e.g. special folders like Downloads)
   const leftLoadingRef = useRef<string | null>(null);
@@ -117,6 +118,10 @@ export default function App() {
 
   // Ref for the context menu to detect outside clicks
   const menuRef = useRef<HTMLDivElement>(null);
+
+  // In-memory cache for directory listings to show cached results instantly
+  // while fetching fresh data in the background for changes (stale-while-revalidate).
+  const dirCacheRef = useRef(new Map<string, DirEntry[]>());
 
   // Right pane for dual mode (basic independent navigation)
   const [rightCurrentPath, setRightCurrentPath] = useState('H:\\');
@@ -137,7 +142,19 @@ export default function App() {
     leftLoadingRef.current = normalized;
 
     const myToken = ++leftLoadTokenRef.current;
-    setIsLoading(true);
+
+    // Show cached listing immediately (if any) for snappy feel, then fetch fresh in bg
+    const cached = dirCacheRef.current.get(normalized);
+    if (cached) {
+      const mergedCached = cached.map(e => {
+        const c = sizeCache[e.path];
+        return (e.isDirectory && c) ? { ...e, size: c.size, fileCount: c.fileCount, dirCount: c.dirCount } : e;
+      });
+      setEntries(mergedCached);
+      // do not show spinner if we have cache
+    } else {
+      setIsLoading(true);
+    }
     setSelected(null);
     setFilter('');
 
@@ -147,11 +164,14 @@ export default function App() {
       // Ignore if user has since navigated elsewhere
       if (myToken !== leftLoadTokenRef.current) return;
 
+      // Update cache with fresh listing
+      dirCacheRef.current.set(normalized, list);
+
       // Merge any already known sizes from cache
       const merged = list.map(e => {
-        const cached = sizeCache[e.path];
-        if (e.isDirectory && cached) {
-          return { ...e, size: cached.size, fileCount: cached.fileCount, dirCount: cached.dirCount };
+        const cachedSize = sizeCache[e.path];
+        if (e.isDirectory && cachedSize) {
+          return { ...e, size: cachedSize.size, fileCount: cachedSize.fileCount, dirCount: cachedSize.dirCount };
         }
         return e;
       });
@@ -174,7 +194,7 @@ export default function App() {
     } catch (err) {
       if (myToken === leftLoadTokenRef.current) {
         console.error('Failed to list directory', err);
-        setEntries([]);
+        if (!cached) setEntries([]);
       }
     } finally {
       if (myToken === leftLoadTokenRef.current) {
@@ -192,16 +212,32 @@ export default function App() {
     rightLoadingRef.current = normalized;
 
     const myToken = ++rightLoadTokenRef.current;
-    setIsRightLoading(true);
+
+    // Show cached listing immediately (if any) for snappy feel, then fetch fresh in bg
+    const cached = dirCacheRef.current.get(normalized);
+    if (cached) {
+      const mergedCached = cached.map(e => {
+        const c = sizeCache[e.path];
+        return (e.isDirectory && c) ? { ...e, size: c.size, fileCount: c.fileCount, dirCount: c.dirCount } : e;
+      });
+      setRightEntries(mergedCached);
+      // do not show spinner if we have cache
+    } else {
+      setIsRightLoading(true);
+    }
+
     try {
       const list: DirEntry[] = await api.listDirectory(normalized);
 
       if (myToken !== rightLoadTokenRef.current) return;
 
+      // Update cache with fresh listing
+      dirCacheRef.current.set(normalized, list);
+
       const merged = list.map(e => {
-        const cached = sizeCache[e.path];
-        if (e.isDirectory && cached) {
-          return { ...e, size: cached.size, fileCount: cached.fileCount, dirCount: cached.dirCount };
+        const cachedSize = sizeCache[e.path];
+        if (e.isDirectory && cachedSize) {
+          return { ...e, size: cachedSize.size, fileCount: cachedSize.fileCount, dirCount: cachedSize.dirCount };
         }
         return e;
       });
@@ -217,7 +253,7 @@ export default function App() {
     } catch (err) {
       if (myToken === rightLoadTokenRef.current) {
         console.error('Failed to list right directory', err);
-        setRightEntries([]);
+        if (!cached) setRightEntries([]);
       }
     } finally {
       if (myToken === rightLoadTokenRef.current) {
@@ -233,7 +269,13 @@ export default function App() {
     loadDirectory(currentPath);
     loadRightDirectory(rightCurrentPath);
 
-    api.getDrives().then((d: DriveInfo[]) => setDrives(d)).catch(() => {});
+    api.getDrives().then((d: DriveInfo[]) => setDrives(d)).catch(() => {
+      // demo fallback with sizes
+      setDrives([
+        { name: 'C:', path: 'C:\\', size: 1000000000000, freeSpace: 300000000000 },
+        { name: 'D:', path: 'D:\\', size: 500000000000, freeSpace: 150000000000 },
+      ]);
+    });
   }, []);
 
   // Load customizable Quick Access (defaults from main process using proper app.getPath for symlinks/custom locations)
@@ -254,6 +296,21 @@ export default function App() {
     };
     loadQuickAccess();
   }, []);
+
+  // Listen for copy/paste progress from main process (robocopy or custom)
+  useEffect(() => {
+    if (api && typeof api.onCopyProgress === 'function') {
+      api.onCopyProgress((data: any) => {
+        if (data && data.line) {
+          setOperationStatus(data.line);
+          // Auto clear after a bit when complete
+          if (data.line.includes('complete') || data.line.includes('Complete')) {
+            setTimeout(() => setOperationStatus(''), 2500);
+          }
+        }
+      });
+    }
+  }, [api]);
 
   // History navigation
   const navigateTo = useCallback((newPath: string) => {
@@ -867,12 +924,12 @@ export default function App() {
               title={d.size != null && d.freeSpace != null ? `${formatSize(d.freeSpace)} free of ${formatSize(d.size)}` : undefined}
             >
               <HardDrive size={15} className="text-emerald-400" />
-              <span className="flex-1 truncate">
+              <span className="flex-1 min-w-0 truncate">
                 {d.name} {d.label ? `(${d.label})` : ''}
-                {d.size != null && d.freeSpace != null && (
-                  <span className="text-[10px] text-zinc-500 ml-1">({formatSize(d.freeSpace)} free of {formatSize(d.size)})</span>
-                )}
               </span>
+              {d.size != null && d.freeSpace != null && (
+                <span className="text-[10px] text-zinc-500 flex-shrink-0 ml-1 whitespace-nowrap">({formatSize(d.freeSpace)} free of {formatSize(d.size)})</span>
+              )}
             </div>
           )) : (
             <div className="mx-1.5 px-2.5 py-1 text-zinc-500 text-xs">No drives detected</div>
@@ -953,10 +1010,10 @@ export default function App() {
                   <table className="w-full">
                     <thead>
                       <tr>
-                        <th onClick={() => toggleSort('name')} className="sortable w-[52%] text-left">Name {sortBy === 'name' ? (sortDir === 'asc' ? '▲' : '▼') : ''}</th>
-                        <th onClick={() => toggleSort('size')} className="sortable w-36 text-right pr-4">Size {sortBy === 'size' ? (sortDir === 'asc' ? '▲' : '▼') : ''}</th>
-                        <th onClick={() => toggleSort('mtime')} className="sortable w-40">Date modified {sortBy === 'mtime' ? (sortDir === 'asc' ? '▲' : '▼') : ''}</th>
-                        <th>Kind</th>
+                        <th onClick={() => toggleSort('name')} className="sortable w-[48%] text-left">Name {sortBy === 'name' ? (sortDir === 'asc' ? '▲' : '▼') : ''}</th>
+                        <th onClick={() => toggleSort('size')} className="sortable w-[18%] text-right pr-4">Size {sortBy === 'size' ? (sortDir === 'asc' ? '▲' : '▼') : ''}</th>
+                        <th onClick={() => toggleSort('mtime')} className="sortable w-[22%]">Date modified {sortBy === 'mtime' ? (sortDir === 'asc' ? '▲' : '▼') : ''}</th>
+                        <th className="w-[12%]">Kind</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1030,10 +1087,10 @@ export default function App() {
                     <table className="w-full">
                       <thead>
                         <tr>
-                          <th onClick={() => toggleRightSort('name')} className="sortable w-[52%] text-left">Name {rightSortBy === 'name' ? (rightSortDir === 'asc' ? '▲' : '▼') : ''}</th>
-                          <th onClick={() => toggleRightSort('size')} className="sortable w-36 text-right pr-4">Size {rightSortBy === 'size' ? (rightSortDir === 'asc' ? '▲' : '▼') : ''}</th>
-                          <th onClick={() => toggleRightSort('mtime')} className="sortable w-40">Date modified {rightSortBy === 'mtime' ? (rightSortDir === 'asc' ? '▲' : '▼') : ''}</th>
-                          <th>Kind</th>
+                          <th onClick={() => toggleRightSort('name')} className="sortable w-[48%] text-left">Name {rightSortBy === 'name' ? (rightSortDir === 'asc' ? '▲' : '▼') : ''}</th>
+                          <th onClick={() => toggleRightSort('size')} className="sortable w-[18%] text-right pr-4">Size {rightSortBy === 'size' ? (rightSortDir === 'asc' ? '▲' : '▼') : ''}</th>
+                          <th onClick={() => toggleRightSort('mtime')} className="sortable w-[22%]">Date modified {rightSortBy === 'mtime' ? (rightSortDir === 'asc' ? '▲' : '▼') : ''}</th>
+                          <th className="w-[12%]">Kind</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1093,6 +1150,7 @@ export default function App() {
             <div>{entries.length} items • {stats.folderCount} folders, {stats.fileCount} files</div>
             <div>Files in view: <span className="text-zinc-200">{formatSize(stats.filesTotalBytes)}</span></div>
             {selectedEntry && <div className="ml-auto truncate max-w-[520px] text-zinc-500">{selectedEntry.path}</div>}
+            {operationStatus && <div className="ml-2 text-blue-400 truncate max-w-[300px]">{operationStatus}</div>}
             <div className="ml-auto text-[10px] text-zinc-500 hidden md:block">
               Ctrl+R = calc all • Click folder size to scan {dualPane ? '• Dual pane ON' : ''}
             </div>

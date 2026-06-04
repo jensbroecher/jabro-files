@@ -62,6 +62,11 @@ const api = {
   getDefaultQuickAccess: (): Promise<Array<{ label: string; path: string }>> =>
     ipcRenderer.invoke('get-default-quick-access'),
 
+  // Listen for copy/paste progress (for UI feedback during long operations)
+  onCopyProgress: (callback: (data: any) => void) => {
+    ipcRenderer.on('copy-progress', (_event, data) => callback(data));
+  },
+
   // Optional: platform info
   platform: process.platform,
 };
