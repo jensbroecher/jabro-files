@@ -73,6 +73,13 @@ body {
   flex: 1;
   overflow: auto;
   background: #0f0f10;
+  scrollbar-gutter: stable; /* reserve space for scrollbar to prevent layout shift / flickering when it appears/disappears */
+}
+
+/* Ensure scroll containers in the file lists reserve scrollbar gutter to avoid flicker on content change */
+.list-area > div.overflow-auto,
+.file-list.overflow-auto {
+  scrollbar-gutter: stable;
 }
 
 .file-list table {

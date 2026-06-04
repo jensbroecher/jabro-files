@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs/promises';
+import * as fsSync from 'node:fs';
 import { exec } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
@@ -29,8 +30,29 @@ function getIndexHtmlPath(): string {
 
 let mainWindow: BrowserWindow | null = null;
 
+const getBoundsPath = () => path.join(app.getPath('userData'), 'window-bounds.json');
+
+function getSavedBounds(): any {
+  try {
+    if (fsSync.existsSync(getBoundsPath())) {
+      const data = fsSync.readFileSync(getBoundsPath(), 'utf8');
+      return JSON.parse(data);
+    }
+  } catch {}
+  return null;
+}
+
+function saveBounds(win: BrowserWindow) {
+  try {
+    const bounds = win.getBounds();
+    (bounds as any).isMaximized = win.isMaximized();
+    fsSync.writeFileSync(getBoundsPath(), JSON.stringify(bounds));
+  } catch {}
+}
+
 function createWindow() {
-  mainWindow = new BrowserWindow({
+  const savedBounds = getSavedBounds();
+  const windowOpts: Electron.BrowserWindowConstructorOptions = {
     width: 1180,
     height: 780,
     minWidth: 820,
@@ -49,7 +71,20 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
     },
-  });
+  };
+
+  if (savedBounds) {
+    windowOpts.x = savedBounds.x;
+    windowOpts.y = savedBounds.y;
+    windowOpts.width = savedBounds.width;
+    windowOpts.height = savedBounds.height;
+  }
+
+  mainWindow = new BrowserWindow(windowOpts);
+
+  if (savedBounds && savedBounds.isMaximized) {
+    mainWindow.maximize();
+  }
 
   // Smart loading:
   // - `npm run dev` (via vite-plugin-electron) sets VITE_DEV_SERVER_URL → loads with HMR
@@ -63,6 +98,10 @@ function createWindow() {
 
   // For debugging packaged builds you can temporarily uncomment:
   // mainWindow.webContents.openDevTools({ mode: 'detach' });
+
+  mainWindow.on('moved', () => saveBounds(mainWindow!));
+  mainWindow.on('resized', () => saveBounds(mainWindow!));
+  mainWindow.on('close', () => saveBounds(mainWindow!));
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -243,6 +282,27 @@ async function removeItem(p: string): Promise<void> {
   }
 }
 
+async function createNewFolder(targetDir: string): Promise<string> {
+  let baseName = 'New folder';
+  let folderName = baseName;
+  let fullPath = path.join(targetDir, folderName);
+  let counter = 1;
+  while (true) {
+    try {
+      await fs.access(fullPath);
+      // exists, try next name
+      folderName = `${baseName} (${counter})`;
+      fullPath = path.join(targetDir, folderName);
+      counter++;
+    } catch {
+      // does not exist, good
+      break;
+    }
+  }
+  await fs.mkdir(fullPath);
+  return fullPath;
+}
+
 ipcMain.handle('copy-files', async (_e, { sources, target }: { sources: string[]; target: string }) => {
   for (const src of sources) {
     const name = path.basename(src);
@@ -286,6 +346,16 @@ ipcMain.handle('move-files', async (_e, { sources, target }: { sources: string[]
   }
 });
 
+ipcMain.handle('create-folder', async (_e, targetDir: string) => {
+  try {
+    const newPath = await createNewFolder(targetDir);
+    return newPath;
+  } catch (err) {
+    console.error('create-folder failed for', targetDir, err);
+    throw err;
+  }
+});
+
 ipcMain.handle('select-folder', async () => {
   if (!mainWindow) return null;
   const result = await dialog.showOpenDialog(mainWindow, {
@@ -305,7 +375,7 @@ ipcMain.handle('show-in-explorer', async (_e, target: string) => {
 });
 
 // Get logical drives on Windows using PowerShell (fast and reliable)
-ipcMain.handle('get-drives', async (): Promise<Array<{ name: string; path: string; label?: string }>> => {
+ipcMain.handle('get-drives', async (): Promise<Array<{ name: string; path: string; label?: string; size?: number; freeSpace?: number }>> => {
   if (process.platform !== 'win32') {
     return [{ name: '/', path: '/' }];
   }
@@ -321,6 +391,8 @@ ipcMain.handle('get-drives', async (): Promise<Array<{ name: string; path: strin
         name: d.DeviceID,
         path: d.DeviceID + '\\',
         label: d.VolumeName || undefined,
+        size: d.Size ? Number(d.Size) : undefined,
+        freeSpace: d.FreeSpace ? Number(d.FreeSpace) : undefined,
       }));
   } catch (e) {
     // Fallback: try common drives
@@ -333,5 +405,18 @@ ipcMain.handle('get-drives', async (): Promise<Array<{ name: string; path: strin
       } catch {}
     }
     return existing.length ? existing : [{ name: 'C:', path: 'C:\\' }];
+  }
+});
+
+ipcMain.handle('get-default-quick-access', async () => {
+  try {
+    return [
+      { label: 'Desktop', path: app.getPath('desktop') },
+      { label: 'Documents', path: app.getPath('documents') },
+      { label: 'Downloads', path: app.getPath('downloads') },
+    ];
+  } catch (e) {
+    console.error('get-default-quick-access failed', e);
+    return [];
   }
 });

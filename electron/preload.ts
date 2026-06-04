@@ -54,6 +54,14 @@ const api = {
   moveFiles: (sources: string[], target: string): Promise<void> =>
     ipcRenderer.invoke('move-files', { sources, target }),
 
+  // Create a new folder in the given directory (with unique name "New folder", "New folder (2)" etc.)
+  createFolder: (targetDir: string): Promise<string> =>
+    ipcRenderer.invoke('create-folder', targetDir),
+
+  // Get default Quick Access folders using proper Electron paths (respects symlinks/custom user folders)
+  getDefaultQuickAccess: (): Promise<Array<{ label: string; path: string }>> =>
+    ipcRenderer.invoke('get-default-quick-access'),
+
   // Optional: platform info
   platform: process.platform,
 };
