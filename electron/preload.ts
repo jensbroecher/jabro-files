@@ -67,6 +67,12 @@ const api = {
     ipcRenderer.on('copy-progress', (_event, data) => callback(data));
   },
 
+  readTextFile: (filePath: string): Promise<string> =>
+    ipcRenderer.invoke('read-text-file', filePath),
+
+  openTerminal: (folderPath: string, shell: 'cmd' | 'powershell' = 'cmd'): Promise<void> =>
+    ipcRenderer.invoke('open-terminal', folderPath, shell),
+
   // Optional: platform info
   platform: process.platform,
 };

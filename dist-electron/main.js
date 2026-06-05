@@ -2,35 +2,35 @@ import { BrowserWindow as e, app as t, dialog as n, ipcMain as r, shell as i } f
 import a from "node:path";
 import o from "node:fs/promises";
 import * as s from "node:fs";
-import { exec as c } from "node:child_process";
-import { promisify as l } from "node:util";
-import { fileURLToPath as u } from "node:url";
+import { exec as c, spawn as l } from "node:child_process";
+import { promisify as u } from "node:util";
+import { fileURLToPath as d } from "node:url";
 //#region electron/main.ts
-var d = l(c), f = u(import.meta.url), p = a.dirname(f);
-function m() {
-	return t.isPackaged ? a.join(process.resourcesPath, "app.asar", "dist-electron", "preload.js") : a.join(p, "preload.js");
-}
+var f = u(c), p = d(import.meta.url), m = a.dirname(p);
 function h() {
-	return t.isPackaged ? a.join(process.resourcesPath, "app.asar", "dist", "index.html") : a.join(p, "../dist/index.html");
+	return t.isPackaged ? a.join(process.resourcesPath, "app.asar", "dist-electron", "preload.js") : a.join(m, "preload.js");
 }
-var g = null, _ = () => a.join(t.getPath("userData"), "window-bounds.json");
-function v() {
+function g() {
+	return t.isPackaged ? a.join(process.resourcesPath, "app.asar", "dist", "index.html") : a.join(m, "../dist/index.html");
+}
+var _ = null, v = () => a.join(t.getPath("userData"), "window-bounds.json");
+function y() {
 	try {
-		if (s.existsSync(_())) {
-			let e = s.readFileSync(_(), "utf8");
+		if (s.existsSync(v())) {
+			let e = s.readFileSync(v(), "utf8");
 			return JSON.parse(e);
 		}
 	} catch {}
 	return null;
 }
-function y(e) {
+function b(e) {
 	try {
 		let t = e.getBounds();
-		t.isMaximized = e.isMaximized(), s.writeFileSync(_(), JSON.stringify(t));
+		t.isMaximized = e.isMaximized(), s.writeFileSync(v(), JSON.stringify(t));
 	} catch {}
 }
-function b() {
-	let t = v(), n = {
+function x() {
+	let t = y(), n = {
 		width: 1180,
 		height: 780,
 		minWidth: 820,
@@ -44,20 +44,20 @@ function b() {
 			height: 40
 		},
 		webPreferences: {
-			preload: m(),
+			preload: h(),
 			contextIsolation: !0,
 			nodeIntegration: !1
 		}
 	};
-	t && (n.x = t.x, n.y = t.y, n.width = t.width, n.height = t.height), g = new e(n), t && t.isMaximized && g.maximize();
+	t && (n.x = t.x, n.y = t.y, n.width = t.width, n.height = t.height), _ = new e(n), t && t.isMaximized && _.maximize();
 	let r = process.env.VITE_DEV_SERVER_URL;
-	r ? g.loadURL(r) : g.loadFile(h()), g.on("moved", () => y(g)), g.on("resized", () => y(g)), g.on("close", () => y(g)), g.on("closed", () => {
-		g = null;
+	r ? _.loadURL(r) : _.loadFile(g()), _.on("moved", () => b(_)), _.on("resized", () => b(_)), _.on("close", () => b(_)), _.on("closed", () => {
+		_ = null;
 	});
 }
 t.whenReady().then(() => {
-	b(), t.on("activate", () => {
-		e.getAllWindows().length === 0 && b();
+	x(), t.on("activate", () => {
+		e.getAllWindows().length === 0 && x();
 	});
 }), t.on("window-all-closed", () => {
 	process.platform !== "darwin" && t.quit();
@@ -87,7 +87,7 @@ t.whenReady().then(() => {
 		return console.error("list-directory error", t, e), [];
 	}
 });
-async function x(e, t = 12) {
+async function S(e, t = 12) {
 	let n = 0, r = 0, i = 0, s = [e], c = [], l = async () => {
 		for (; s.length > 0;) {
 			let t = s.shift();
@@ -119,7 +119,7 @@ async function x(e, t = 12) {
 }
 r.handle("get-folder-size", async (e, t) => {
 	try {
-		return await x(t);
+		return await S(t);
 	} catch (e) {
 		return console.error("get-folder-size failed", t, e), {
 			size: 0,
@@ -128,42 +128,41 @@ r.handle("get-folder-size", async (e, t) => {
 		};
 	}
 });
-async function S(e, t) {
-	if ((await o.stat(e)).isDirectory()) if (process.platform === "win32") {
-		let n = `robocopy "${e}" "${t}" /E /COPY:DAT /R:3 /W:5 /NP /NJH /NJS /MT:8`;
-		try {
-			await d(n);
-		} catch (e) {
-			if (e.code > 7) throw e;
+async function C(e, t) {
+	if ((await o.stat(e)).isDirectory()) {
+		if (process.platform === "win32") return new Promise((n, r) => {
+			let i = l("robocopy", [
+				e,
+				t,
+				"/E",
+				"/COPY:DAT",
+				"/R:1",
+				"/W:1",
+				"/MT:8",
+				"/IS"
+			], { windowsVerbatimArguments: !0 });
+			i.stdout.on("data", (e) => {
+				let t = e.toString().trim();
+				t && _ && _.webContents.send("copy-progress", { line: t.substring(0, 120) });
+			}), i.on("close", (t) => {
+				t > 7 ? r(/* @__PURE__ */ Error(`robocopy failed with code ${t}`)) : (_ && _.webContents.send("copy-progress", { line: `Finished copying folder: ${a.basename(e)}` }), n());
+			}), i.on("error", r);
+		});
+		{
+			await o.mkdir(t, { recursive: !0 });
+			let n = await o.readdir(e);
+			for (let r of n) await C(a.join(e, r), a.join(t, r));
 		}
-		g && g.webContents.send("copy-progress", { line: `Finished copying folder: ${a.basename(e)}` });
-	} else {
-		await o.mkdir(t, { recursive: !0 });
-		let n = await o.readdir(e);
-		for (let r of n) await S(a.join(e, r), a.join(t, r));
-	}
-	else if (process.platform === "win32") {
-		let n = `robocopy "${a.dirname(e)}" "${a.dirname(t)}" "${a.basename(e)}" /R:3 /W:5 /NP /NJH /NJS`;
-		try {
-			await d(n);
-		} catch (e) {
-			if (e.code > 7) throw e;
-		}
-		let r = a.join(a.dirname(t), a.basename(e));
-		if (r.toLowerCase() !== t.toLowerCase()) try {
-			await o.rename(r, t);
-		} catch {}
-		g && g.webContents.send("copy-progress", { line: `Copied file: ${a.basename(e)}` });
-	} else await o.copyFile(e, t);
+	} else await o.copyFile(e, t), _ && _.webContents.send("copy-progress", { line: `Copied file: ${a.basename(t)}` });
 }
-async function C(e) {
+async function w(e) {
 	if ((await o.stat(e)).isDirectory()) {
 		let t = await o.readdir(e);
-		for (let n of t) await C(a.join(e, n));
+		for (let n of t) await w(a.join(e, n));
 		await o.rmdir(e);
 	} else await o.unlink(e);
 }
-async function w(e) {
+async function T(e) {
 	let t = "New folder", n = t, r = a.join(e, n), i = 1;
 	for (;;) try {
 		await o.access(r), n = `${t} (${i})`, r = a.join(e, n), i++;
@@ -182,9 +181,9 @@ r.handle("copy-files", async (e, { sources: t, target: n }) => {
 		} catch {
 			break;
 		}
-		await S(e, r), g && g.webContents.send("copy-progress", { line: `Copied: ${a.basename(e)}` });
+		await C(e, r);
 	}
-	g && g.webContents.send("copy-progress", { line: "Copy complete." });
+	_ && _.webContents.send("copy-progress", { line: "Copy complete." });
 }), r.handle("move-files", async (e, { sources: t, target: n }) => {
 	for (let e of t) {
 		let t = a.basename(e), r = a.join(n, t), i = 1;
@@ -198,20 +197,19 @@ r.handle("copy-files", async (e, { sources: t, target: n }) => {
 		try {
 			await o.rename(e, r);
 		} catch {
-			await S(e, r), await C(e);
+			await C(e, r), await w(e);
 		}
-		g && g.webContents.send("copy-progress", { line: `Moved: ${a.basename(e)}` });
 	}
-	g && g.webContents.send("copy-progress", { line: "Move complete." });
+	_ && _.webContents.send("copy-progress", { line: "Move complete." });
 }), r.handle("create-folder", async (e, t) => {
 	try {
-		return await w(t);
+		return await T(t);
 	} catch (e) {
 		throw console.error("create-folder failed for", t, e), e;
 	}
 }), r.handle("select-folder", async () => {
-	if (!g) return null;
-	let e = await n.showOpenDialog(g, {
+	if (!_) return null;
+	let e = await n.showOpenDialog(_, {
 		properties: ["openDirectory", "createDirectory"],
 		title: "Open folder"
 	});
@@ -220,13 +218,26 @@ r.handle("copy-files", async (e, { sources: t, target: n }) => {
 	await i.openPath(t);
 }), r.handle("show-in-explorer", async (e, t) => {
 	i.showItemInFolder(t);
+}), r.handle("read-text-file", async (e, t) => {
+	try {
+		return (await o.stat(t)).size > 1024 * 1024 ? "[File too large to preview as text. Use \"Open with default app\".]" : await o.readFile(t, "utf8");
+	} catch {
+		return "[Unable to read file as text.]";
+	}
+}), r.handle("open-terminal", async (e, t, n = "cmd") => {
+	try {
+		let e = t.replace(/"/g, "\\\""), r;
+		r = n === "powershell" ? `start powershell -NoExit -Command "Set-Location -LiteralPath '${e}'"` : `start cmd /K "cd /D \\"${e}\\""`, await f(r, { cwd: t });
+	} catch (e) {
+		console.error("Failed to open terminal", e);
+	}
 }), r.handle("get-drives", async () => {
 	if (process.platform !== "win32") return [{
 		name: "/",
 		path: "/"
 	}];
 	try {
-		let { stdout: e } = await d("powershell -NoProfile -Command \"[System.IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady } | Select-Object Name, VolumeLabel, TotalSize, AvailableFreeSpace | ConvertTo-Json -AsArray\""), t = JSON.parse(e || "[]");
+		let { stdout: e } = await f("powershell -NoProfile -Command \"[System.IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady } | Select-Object Name, VolumeLabel, TotalSize, AvailableFreeSpace | ConvertTo-Json -AsArray\""), t = JSON.parse(e || "[]");
 		return (Array.isArray(t) ? t : [t]).filter((e) => e.Name).map((e) => ({
 			name: e.Name.replace(/\\$/, ""),
 			path: e.Name.endsWith("\\") ? e.Name : e.Name + "\\",
@@ -236,7 +247,7 @@ r.handle("copy-files", async (e, { sources: t, target: n }) => {
 		}));
 	} catch {
 		try {
-			let { stdout: e } = await d("wmic logicaldisk get name,size,freespace /format:csv"), t = e.trim().split(/\r?\n/).filter(Boolean), n = [];
+			let { stdout: e } = await f("wmic logicaldisk get name,size,freespace /format:csv"), t = e.trim().split(/\r?\n/).filter(Boolean), n = [];
 			for (let e = 1; e < t.length; e++) {
 				let r = t[e].split(",").map((e) => e.trim());
 				if (r.length < 4) continue;

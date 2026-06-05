@@ -2,7 +2,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
-import { exec } from 'node:child_process';
+import { exec, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
@@ -267,19 +267,29 @@ async function copyItem(src: string, dest: string): Promise<void> {
   const stat = await fs.stat(src);
   if (stat.isDirectory()) {
     if (process.platform === 'win32') {
-      // Use robocopy on Windows: much more reliable (long paths, ACLs, large trees, resume)
-      // It also provides natural progress output we can surface to UI.
-      const cmd = `robocopy "${src}" "${dest}" /E /COPY:DAT /R:3 /W:5 /NP /NJH /NJS /MT:8`;
-      try {
-        await execAsync(cmd);
-      } catch (e: any) {
-        // robocopy returns non-zero even on success in some cases (e.g. files copied)
-        if (e.code > 7) throw e;
-      }
-      // Send a completion note for UI
-      if (mainWindow) {
-        mainWindow.webContents.send('copy-progress', { line: `Finished copying folder: ${path.basename(src)}` });
-      }
+      // Use robocopy on Windows for reliable copy (handles long paths, permissions, large trees better than JS recursive)
+      // We stream its output to show live progress in the UI status bar.
+      return new Promise<void>((resolve, reject) => {
+        const args = [src, dest, '/E', '/COPY:DAT', '/R:1', '/W:1', '/MT:8', '/IS'];
+        const child = spawn('robocopy', args, { windowsVerbatimArguments: true });
+        child.stdout.on('data', (data: Buffer) => {
+          const line = data.toString().trim();
+          if (line && mainWindow) {
+            mainWindow.webContents.send('copy-progress', { line: line.substring(0, 120) });
+          }
+        });
+        child.on('close', (code: number) => {
+          if (code > 7) {
+            reject(new Error(`robocopy failed with code ${code}`));
+          } else {
+            if (mainWindow) {
+              mainWindow.webContents.send('copy-progress', { line: `Finished copying folder: ${path.basename(src)}` });
+            }
+            resolve();
+          }
+        });
+        child.on('error', reject);
+      });
     } else {
       await fs.mkdir(dest, { recursive: true });
       const items = await fs.readdir(src);
@@ -288,23 +298,10 @@ async function copyItem(src: string, dest: string): Promise<void> {
       }
     }
   } else {
-    if (process.platform === 'win32') {
-      const cmd = `robocopy "${path.dirname(src)}" "${path.dirname(dest)}" "${path.basename(src)}" /R:3 /W:5 /NP /NJH /NJS`;
-      try {
-        await execAsync(cmd);
-      } catch (e: any) {
-        if (e.code > 7) throw e;
-      }
-      // If dest name differed (unique name logic), rename
-      const actualDest = path.join(path.dirname(dest), path.basename(src));
-      if (actualDest.toLowerCase() !== dest.toLowerCase()) {
-        try { await fs.rename(actualDest, dest); } catch {}
-      }
-      if (mainWindow) {
-        mainWindow.webContents.send('copy-progress', { line: `Copied file: ${path.basename(src)}` });
-      }
-    } else {
-      await fs.copyFile(src, dest);
+    // For individual files, simple copy is sufficient and correctly uses the (possibly uniquified) dest name
+    await fs.copyFile(src, dest);
+    if (mainWindow) {
+      mainWindow.webContents.send('copy-progress', { line: `Copied file: ${path.basename(dest)}` });
     }
   }
 }
@@ -359,9 +356,6 @@ ipcMain.handle('copy-files', async (_e, { sources, target }: { sources: string[]
       }
     }
     await copyItem(src, dest);
-    if (mainWindow) {
-      mainWindow.webContents.send('copy-progress', { line: `Copied: ${path.basename(src)}` });
-    }
   }
   if (mainWindow) mainWindow.webContents.send('copy-progress', { line: 'Copy complete.' });
 });
@@ -386,9 +380,6 @@ ipcMain.handle('move-files', async (_e, { sources, target }: { sources: string[]
     } catch {
       await copyItem(src, dest);
       await removeItem(src);
-    }
-    if (mainWindow) {
-      mainWindow.webContents.send('copy-progress', { line: `Moved: ${path.basename(src)}` });
     }
   }
   if (mainWindow) mainWindow.webContents.send('copy-progress', { line: 'Move complete.' });
@@ -423,6 +414,37 @@ ipcMain.handle('show-in-explorer', async (_e, target: string) => {
 });
 
 // Get logical drives on Windows using PowerShell (fast and reliable)
+ipcMain.handle('read-text-file', async (_e, filePath: string): Promise<string> => {
+  try {
+    // Limit size for safety (e.g. 1MB)
+    const maxSize = 1024 * 1024;
+    const stat = await fs.stat(filePath);
+    if (stat.size > maxSize) {
+      return '[File too large to preview as text. Use "Open with default app".]';
+    }
+    return await fs.readFile(filePath, 'utf8');
+  } catch (err) {
+    return '[Unable to read file as text.]';
+  }
+});
+
+ipcMain.handle('open-terminal', async (_e, folderPath: string, shell: 'cmd' | 'powershell' = 'cmd') => {
+  try {
+    const escaped = folderPath.replace(/"/g, '\\"');
+    let command: string;
+    if (shell === 'powershell') {
+      // Open PowerShell in the folder
+      command = `start powershell -NoExit -Command "Set-Location -LiteralPath '${escaped}'"`;
+    } else {
+      // Open classic Command Prompt in the folder
+      command = `start cmd /K "cd /D \\"${escaped}\\""`;
+    }
+    await execAsync(command, { cwd: folderPath });
+  } catch (err) {
+    console.error('Failed to open terminal', err);
+  }
+});
+
 ipcMain.handle('get-drives', async (): Promise<Array<{ name: string; path: string; label?: string; size?: number; freeSpace?: number }>> => {
   if (process.platform !== 'win32') {
     return [{ name: '/', path: '/' }];

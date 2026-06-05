@@ -59,6 +59,23 @@ function getIcon(entry: DirEntry) {
   return <File size={18} className="text-zinc-400" />;
 }
 
+function toFileUrl(p: string): string {
+  // Proper file:// URL for local media in Electron renderer (works on Windows too)
+  let normalized = p.replace(/\\/g, '/');
+  if (!normalized.startsWith('/')) normalized = '/' + normalized;
+  return `file://${normalized}`;
+}
+
+function getViewerType(ext?: string): 'image' | 'audio' | 'video' | 'text' | null {
+  if (!ext) return null;
+  const e = ext.toLowerCase();
+  if (['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico'].includes(e)) return 'image';
+  if (['.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac', '.wma'].includes(e)) return 'audio';
+  if (['.mp4', '.webm', '.ogg', '.mov', '.avi', '.mkv', '.wmv'].includes(e)) return 'video';
+  if (['.txt', '.md', '.js', '.ts', '.tsx', '.json', '.css', '.html', '.htm', '.xml', '.csv', '.log', '.ini', '.bat', '.sh', '.py', '.c', '.cpp', '.h'].includes(e)) return 'text';
+  return null;
+}
+
 function matchesSearch(name: string, search: string): boolean {
   if (!search) return true;
   const lowerName = name.toLowerCase();
@@ -107,6 +124,8 @@ export default function App() {
   const [quickAccess, setQuickAccess] = useState<Array<{ label: string; path: string }>>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [operationStatus, setOperationStatus] = useState('');
+  const [viewer, setViewer] = useState<null | { type: 'image' | 'audio' | 'video' | 'text'; path: string; name: string }>(null);
+  const [textContent, setTextContent] = useState<string | null>(null);
 
   // Guards to prevent duplicate/reload loops for the same path (e.g. special folders like Downloads)
   const leftLoadingRef = useRef<string | null>(null);
@@ -311,6 +330,18 @@ export default function App() {
       });
     }
   }, [api]);
+
+  // Load text content when text viewer opens
+  useEffect(() => {
+    if (viewer?.type === 'text' && api) {
+      setTextContent('Loading text preview...');
+      (api as any).readTextFile?.(viewer.path)
+        .then((content: string) => setTextContent(content))
+        .catch(() => setTextContent('Failed to load text content. The file may be too large or binary.'));
+    } else {
+      setTextContent(null);
+    }
+  }, [viewer, api]);
 
   // History navigation
   const navigateTo = useCallback((newPath: string) => {
@@ -536,7 +567,12 @@ export default function App() {
     if (entry.isDirectory) {
       navigateTo(entry.path);
     } else {
-      api.openPath(entry.path);
+      const vtype = getViewerType(entry.ext);
+      if (vtype) {
+        setViewer({ type: vtype, path: entry.path, name: entry.name });
+      } else {
+        api.openPath(entry.path);
+      }
     }
   };
 
@@ -625,8 +661,12 @@ export default function App() {
         activeCalculateAllVisibleSizes();
       }
       if (e.key === 'Escape') {
-        setFilter('');
-        setSelected(null);
+        if (viewer) {
+          setViewer(null);
+        } else {
+          setFilter('');
+          setSelected(null);
+        }
       }
       if (e.key === 'Enter' && selected) {
         const ent = entries.find(x => x.path === selected);
@@ -655,7 +695,7 @@ export default function App() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [activeGoUp, activeRefresh, activeCalculateAllVisibleSizes, selected, entries, copyToClipboard, pasteFromClipboard, activePaneIsRight, rightSelected, rightEntries, navigateRight]);
+  }, [activeGoUp, activeRefresh, activeCalculateAllVisibleSizes, selected, entries, copyToClipboard, pasteFromClipboard, activePaneIsRight, rightSelected, rightEntries, navigateRight, viewer]);
 
   const toggleSort = (key: 'name' | 'size' | 'mtime') => {
     if (sortBy === key) {
@@ -743,6 +783,17 @@ export default function App() {
     if (act === 'copy-item') copyToClipboard(false);
     if (act === 'cut-item') copyToClipboard(true);
     if (act === 'paste') pasteFromClipboard();
+
+    if (act === 'open-cmd' || act === 'open-powershell') {
+      let targetDir = activePaneIsRight ? rightCurrentPath : currentPath;
+      if (entry) {
+        targetDir = entry.isDirectory ? entry.path : entry.path.substring(0, entry.path.lastIndexOf('\\') || entry.path.length);
+      }
+      if (api) {
+        const sh = act === 'open-cmd' ? 'cmd' : 'powershell';
+        await (api as any).openTerminal(targetDir, sh);
+      }
+    }
   };
 
   useEffect(() => {
@@ -770,7 +821,16 @@ export default function App() {
   };
   const onRightRowDoubleClick = (entry: DirEntry) => {
     setActivePane('right');
-    if (entry.isDirectory) navigateRight(entry.path);
+    if (entry.isDirectory) {
+      navigateRight(entry.path);
+    } else {
+      const vtype = getViewerType(entry.ext);
+      if (vtype) {
+        setViewer({ type: vtype, path: entry.path, name: entry.name });
+      } else {
+        api.openPath(entry.path);
+      }
+    }
   };
 
   // Empty space handlers for panes: activate pane, allow paste / new folder via context
@@ -1171,6 +1231,13 @@ export default function App() {
                 Add current folder to Quick Access
               </div>
               <div className="border-t border-zinc-700 my-0.5" />
+              <div className="context-menu-item" onClick={() => ctxAction('open-cmd')}>
+                Open Command Prompt here
+              </div>
+              <div className="context-menu-item" onClick={() => ctxAction('open-powershell')}>
+                Open PowerShell here
+              </div>
+              <div className="border-t border-zinc-700 my-0.5" />
               <div className="context-menu-item" onClick={() => ctxAction('paste')}>
                 Paste
               </div>
@@ -1195,6 +1262,12 @@ export default function App() {
                   Pin to Quick Access
                 </div>
               )}
+              <div className="context-menu-item" onClick={() => ctxAction('open-cmd')}>
+                Open Command Prompt here
+              </div>
+              <div className="context-menu-item" onClick={() => ctxAction('open-powershell')}>
+                Open PowerShell here
+              </div>
               <div className="context-menu-item" onClick={() => ctxAction('copy-item')}>
                 Copy
               </div>
@@ -1210,6 +1283,64 @@ export default function App() {
               </div>
             </>
           )}
+        </div>
+      )}
+
+      {/* Integrated viewer modal for images, audio, video, text */}
+      {viewer && (
+        <div
+          className="fixed inset-0 bg-black/70 z-[9999] flex items-center justify-center p-4"
+          onClick={() => setViewer(null)}
+        >
+          <div
+            className="bg-[#18181b] border border-zinc-700 rounded-xl shadow-2xl max-w-[92vw] max-h-[92vh] w-full flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-2 border-b border-zinc-700 bg-[#111113] text-sm">
+              <div className="truncate font-medium pr-4">{viewer.name}</div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    api.openPath(viewer.path);
+                    setViewer(null);
+                  }}
+                  className="text-xs px-2 py-0.5 bg-zinc-700 hover:bg-zinc-600 rounded"
+                >
+                  Open with default app
+                </button>
+                <button onClick={() => setViewer(null)} className="text-xl leading-none px-2 hover:text-red-400">×</button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-auto p-4 bg-[#0f0f10] flex items-center justify-center">
+              {viewer.type === 'image' && (
+                <img
+                  src={toFileUrl(viewer.path)}
+                  alt={viewer.name}
+                  className="max-w-full max-h-[78vh] object-contain shadow"
+                />
+              )}
+              {viewer.type === 'audio' && (
+                <audio
+                  controls
+                  src={toFileUrl(viewer.path)}
+                  className="w-full max-w-md"
+                />
+              )}
+              {viewer.type === 'video' && (
+                <video
+                  controls
+                  src={toFileUrl(viewer.path)}
+                  className="max-w-full max-h-[78vh]"
+                />
+              )}
+              {viewer.type === 'text' && (
+                <pre className="whitespace-pre-wrap font-mono text-sm w-full max-w-4xl bg-[#111113] p-4 rounded overflow-auto max-h-[78vh] border border-zinc-800">
+                  {textContent || 'Loading...'}
+                </pre>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>
