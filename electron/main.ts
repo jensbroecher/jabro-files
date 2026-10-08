@@ -1,15 +1,35 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell, protocol, net, session } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
+import { Readable } from 'node:stream';
+import os from 'node:os';
 import { exec, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const execAsync = promisify(exec);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// Enable SharedArrayBuffer feature for WebAssembly workers
+app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
+
+// Register privileged custom scheme for streaming local media, PDFs, and 3D assets
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: 'jabro-media',
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+      bypassCSP: true,
+    },
+  },
+]);
 
 function getPreloadPath(): string {
   // In packaged apps the files live inside app.asar (or the portable temp extraction)
@@ -70,6 +90,7 @@ function createWindow() {
       preload: getPreloadPath(),
       contextIsolation: true,
       nodeIntegration: false,
+      plugins: true, // Enables Chromium's built-in PDF viewer plugin
     },
   };
 
@@ -96,8 +117,9 @@ function createWindow() {
     mainWindow.loadFile(getIndexHtmlPath());
   }
 
-  // For debugging packaged builds you can temporarily uncomment:
-  // mainWindow.webContents.openDevTools({ mode: 'detach' });
+  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
+    console.log(`[Renderer LOG ${level}] ${message} (${sourceId}:${line})`);
+  });
 
   mainWindow.on('moved', () => saveBounds(mainWindow!));
   mainWindow.on('resized', () => saveBounds(mainWindow!));
@@ -109,6 +131,108 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  // Enable Cross-Origin Isolation for high-performance zero-copy WebAssembly multi-threading (used by Gaussian Splatting)
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Cross-Origin-Opener-Policy': ['same-origin'],
+        'Cross-Origin-Embedder-Policy': ['require-corp'],
+      },
+    });
+  });
+
+  // Protocol handler for streaming local assets, 3D models, Gaussian splats, and PDFs
+  protocol.handle('jabro-media', async (request) => {
+    try {
+      const url = new URL(request.url);
+      let targetPath = url.searchParams.get('path');
+      if (!targetPath) {
+        let pathname = decodeURIComponent(url.pathname);
+        if (process.platform === 'win32' && pathname.startsWith('/') && /^[a-zA-Z]:/.test(pathname.slice(1))) {
+          pathname = pathname.slice(1);
+        }
+        targetPath = pathname;
+      }
+
+      const stat = await fs.stat(targetPath);
+      const ext = path.extname(targetPath).toLowerCase();
+      const headers = new Headers();
+
+      let mimeType = '';
+      if (ext === '.pdf') mimeType = 'application/pdf';
+      else if (ext === '.glb') mimeType = 'model/gltf-binary';
+      else if (ext === '.gltf') mimeType = 'model/gltf+json';
+      else if (ext === '.obj') mimeType = 'text/plain';
+      else if (ext === '.stl' || ext === '.ply' || ext === '.splat' || ext === '.ksplat' || ext === '.spz') {
+        mimeType = 'application/octet-stream';
+      }
+
+      if (mimeType) headers.set('content-type', mimeType);
+      headers.set('access-control-allow-origin', '*');
+      headers.set('access-control-expose-headers', 'Content-Length, Content-Range, Accept-Ranges');
+      headers.set('accept-ranges', 'bytes');
+      headers.set('Cross-Origin-Resource-Policy', 'cross-origin');
+
+      const range = request.headers.get('range');
+      let status = 200;
+      let nodeStream: any;
+
+      if (range) {
+        const parts = range.replace(/bytes=/, '').split('-');
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
+        if (!isNaN(start) && start < stat.size) {
+          const chunkEnd = Math.min(end, stat.size - 1);
+          const chunkLength = chunkEnd - start + 1;
+          headers.set('content-length', chunkLength.toString());
+          headers.set('content-range', `bytes ${start}-${chunkEnd}/${stat.size}`);
+          status = 206;
+          nodeStream = fsSync.createReadStream(targetPath, { start, end: chunkEnd });
+        } else {
+          headers.set('content-length', stat.size.toString());
+          nodeStream = fsSync.createReadStream(targetPath);
+        }
+      } else {
+        headers.set('content-length', stat.size.toString());
+        nodeStream = fsSync.createReadStream(targetPath);
+      }
+
+      const webStream = Readable.toWeb(nodeStream);
+      return new Response(webStream as any, {
+        status,
+        headers,
+      });
+    } catch (err: any) {
+      console.error('jabro-media protocol error:', err);
+      return new Response('File not found', { status: 404 });
+    }
+  });
+
+  // Fast detector to distinguish 3D Gaussian Splats (.ply) from standard polygon meshes (.ply)
+  ipcMain.handle('detect-ply-type', async (_event, filePath: string): Promise<'gaussian-splat' | '3d'> => {
+    try {
+      const handle = await fs.open(filePath, 'r');
+      const buffer = Buffer.alloc(4096);
+      const { bytesRead } = await handle.read(buffer, 0, 4096, 0);
+      await handle.close();
+      const headerStr = buffer.toString('utf8', 0, bytesRead);
+      if (
+        headerStr.includes('f_dc_') ||
+        headerStr.includes('opacity') ||
+        headerStr.includes('scale_0') ||
+        headerStr.includes('rot_0') ||
+        headerStr.includes('packed_position')
+      ) {
+        return 'gaussian-splat';
+      }
+      return '3d';
+    } catch (err) {
+      console.error('detect-ply-type error:', err);
+      return '3d';
+    }
+  });
+
   createWindow();
 
   app.on('activate', () => {
@@ -263,43 +387,186 @@ ipcMain.handle('get-folder-size', async (_event, dirPath: string) => {
 });
 
 // Helper functions for copy / move
-async function copyItem(src: string, dest: string): Promise<void> {
-  const stat = await fs.stat(src);
-  if (stat.isDirectory()) {
-    if (process.platform === 'win32') {
-      // Use robocopy on Windows for reliable copy (handles long paths, permissions, large trees better than JS recursive)
-      // We stream its output to show live progress in the UI status bar.
-      return new Promise<void>((resolve, reject) => {
-        const args = [src, dest, '/E', '/COPY:DAT', '/R:1', '/W:1', '/MT:8', '/IS'];
-        const child = spawn('robocopy', args, { windowsVerbatimArguments: true });
-        child.stdout.on('data', (data: Buffer) => {
+function normalizeTargetDirectory(target: string): string {
+  let trimmed = (target || '').trim();
+  trimmed = trimmed.replace(/^["']|["']$/g, '');
+  if (/^[A-Za-z]:$/.test(trimmed)) {
+    trimmed += '\\';
+  }
+  return trimmed;
+}
+
+function friendlyErrorMessage(err: any, itemPath: string): string {
+  const code = err?.code;
+  const name = path.basename(itemPath);
+  if (code === 'EBUSY') {
+    return `"${name}" is locked or currently open in another program.`;
+  }
+  if (code === 'EPERM' || code === 'EACCES') {
+    return `Permission denied for "${name}". You may need administrator rights, or the file/folder is write-protected.`;
+  }
+  if (code === 'ENOENT') {
+    return `"${name}" could not be found or the destination folder does not exist.`;
+  }
+  if (code === 'ENOSPC') {
+    return `Not enough free disk space on the target drive to copy "${name}".`;
+  }
+  if (code === 'EINVAL') {
+    return `The file name or path "${name}" contains characters not supported by Windows.`;
+  }
+  if (err?.message?.includes('robocopy failed')) {
+    return `Folder copy failed for "${name}" (${err.message}).`;
+  }
+  return err?.message || `Failed to process "${name}".`;
+}
+
+async function getUniqueDestination(targetDir: string, originalName: string, isSameFolder: boolean): Promise<string> {
+  const parsed = path.parse(originalName);
+  const base = parsed.name || originalName;
+  const ext = parsed.ext || '';
+
+  const initialDest = path.join(targetDir, originalName);
+  try {
+    await fs.access(initialDest);
+    // Already exists, must uniquify
+  } catch {
+    // Free to use
+    return initialDest;
+  }
+
+  let counter = 1;
+  while (counter < 9999) {
+    const candidateName = isSameFolder && counter === 1
+      ? `${base} - Copy${ext}`
+      : `${base} (${counter})${ext}`;
+    const candidatePath = path.join(targetDir, candidateName);
+    try {
+      await fs.access(candidatePath);
+      counter++;
+    } catch {
+      return candidatePath;
+    }
+  }
+  return path.join(targetDir, `${base}_${Date.now()}${ext}`);
+}
+
+async function copySingleFile(src: string, dest: string): Promise<void> {
+  const destDir = path.dirname(dest);
+  await fs.mkdir(destDir, { recursive: true });
+
+  // Clear read-only attribute on destination if it already exists
+  try {
+    await fs.chmod(dest, 0o666);
+  } catch {}
+
+  let lastErr: any = null;
+  // Retry loop for transient locks (e.g. antivirus scanner or indexer)
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await fs.copyFile(src, dest);
+      lastErr = null;
+      break;
+    } catch (err: any) {
+      lastErr = err;
+      if (err.code === 'EPERM' || err.code === 'EACCES') {
+        try { await fs.chmod(dest, 0o666); } catch {}
+      }
+      if (attempt < 2) {
+        await new Promise(r => setTimeout(r, 120 * (attempt + 1)));
+      }
+    }
+  }
+
+  // Fallback to stream copy if copyFile still failed
+  if (lastErr) {
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const reader = fsSync.createReadStream(src);
+        const writer = fsSync.createWriteStream(dest, { flags: 'w' });
+        reader.on('error', reject);
+        writer.on('error', reject);
+        writer.on('finish', resolve);
+        reader.pipe(writer);
+      });
+      lastErr = null;
+    } catch (streamErr) {
+      throw lastErr || streamErr;
+    }
+  }
+
+  // Preserve timestamps if possible
+  try {
+    const srcStat = await fs.stat(src);
+    await fs.utimes(dest, srcStat.atime, srcStat.mtime);
+  } catch {}
+}
+
+async function copyFolder(src: string, dest: string): Promise<void> {
+  const cleanSrc = src.replace(/[\\/]+$/, '');
+  const cleanDest = dest.replace(/[\\/]+$/, '');
+
+  if (process.platform === 'win32') {
+    let robocopyFailed = false;
+    let robocopyErr: any = null;
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        // Robocopy: /E (recursive), /COPY:DAT (data, attributes, timestamps),
+        // /R:1 (1 retry), /W:1 (1 sec wait), /MT:8 (multithreaded), /IS (include same),
+        // /NFL /NDL /NP (reduce log noise while still capturing errors)
+        const args = [cleanSrc, cleanDest, '/E', '/COPY:DAT', '/R:1', '/W:1', '/MT:8', '/IS', '/NFL', '/NDL', '/NP'];
+        // Notice: do NOT use windowsVerbatimArguments: true so Node properly quotes paths with spaces!
+        const child = spawn('robocopy', args);
+
+        child.stdout?.on('data', (data: Buffer) => {
           const line = data.toString().trim();
           if (line && mainWindow) {
             mainWindow.webContents.send('copy-progress', { line: line.substring(0, 120) });
           }
         });
+
+        child.stderr?.on('data', (data: Buffer) => {
+          const line = data.toString().trim();
+          if (line && mainWindow) {
+            mainWindow.webContents.send('copy-progress', { line: 'ERR: ' + line.substring(0, 110) });
+          }
+        });
+
         child.on('close', (code: number) => {
-          if (code > 7) {
-            reject(new Error(`robocopy failed with code ${code}`));
+          // Robocopy exit code bitmask: 0-7 are success/partial states, >=8 is fatal error
+          if (code >= 8) {
+            reject(new Error(`robocopy failed with exit code ${code}`));
           } else {
-            if (mainWindow) {
-              mainWindow.webContents.send('copy-progress', { line: `Finished copying folder: ${path.basename(src)}` });
-            }
             resolve();
           }
         });
-        child.on('error', reject);
+
+        child.on('error', (err) => {
+          reject(err);
+        });
       });
-    } else {
-      await fs.mkdir(dest, { recursive: true });
-      const items = await fs.readdir(src);
-      for (const item of items) {
-        await copyItem(path.join(src, item), path.join(dest, item));
-      }
+    } catch (err) {
+      robocopyFailed = true;
+      robocopyErr = err;
+    }
+
+    if (!robocopyFailed) return;
+    console.warn('robocopy failed, falling back to fs.cp:', robocopyErr?.message);
+  }
+
+  // Built-in recursive copy fallback
+  await fs.cp(src, dest, { recursive: true, force: true });
+}
+
+async function copyItem(src: string, dest: string): Promise<void> {
+  const stat = await fs.stat(src);
+  if (stat.isDirectory()) {
+    await copyFolder(src, dest);
+    if (mainWindow) {
+      mainWindow.webContents.send('copy-progress', { line: `Copied folder: ${path.basename(dest)}` });
     }
   } else {
-    // For individual files, simple copy is sufficient and correctly uses the (possibly uniquified) dest name
-    await fs.copyFile(src, dest);
+    await copySingleFile(src, dest);
     if (mainWindow) {
       mainWindow.webContents.send('copy-progress', { line: `Copied file: ${path.basename(dest)}` });
     }
@@ -307,15 +574,15 @@ async function copyItem(src: string, dest: string): Promise<void> {
 }
 
 async function removeItem(p: string): Promise<void> {
-  const stat = await fs.stat(p);
-  if (stat.isDirectory()) {
-    const items = await fs.readdir(p);
-    for (const item of items) {
-      await removeItem(path.join(p, item));
+  try {
+    await fs.rm(p, { recursive: true, force: true });
+  } catch (err) {
+    try {
+      await fs.chmod(p, 0o666);
+      await fs.rm(p, { recursive: true, force: true });
+    } catch {
+      throw err;
     }
-    await fs.rmdir(p);
-  } else {
-    await fs.unlink(p);
   }
 }
 
@@ -340,57 +607,513 @@ async function createNewFolder(targetDir: string): Promise<string> {
   return fullPath;
 }
 
-ipcMain.handle('copy-files', async (_e, { sources, target }: { sources: string[]; target: string }) => {
-  for (const src of sources) {
-    const name = path.basename(src);
-    let dest = path.join(target, name);
-    let i = 1;
+interface ElevatedItem {
+  src?: string;
+  dest: string;
+  action?: 'copy' | 'move' | 'createFolder';
+  isDirectory?: boolean;
+}
+
+async function performElevatedOperation(params: {
+  sources?: string[];
+  target: string;
+  isMove?: boolean;
+  action?: 'copy' | 'move' | 'createFolder';
+  newFolderName?: string;
+}): Promise<{
+  success: boolean;
+  cancelled?: boolean;
+  items?: Array<{ src?: string; dest: string; name: string; success: boolean; error?: string }>;
+  error?: string;
+  summary?: string;
+}> {
+  if (process.platform !== 'win32') {
+    throw new Error('Administrator elevation is only supported on Windows.');
+  }
+
+  const targetDir = normalizeTargetDirectory(params.target);
+  const isMove = !!params.isMove;
+  const isCreateFolder = params.action === 'createFolder';
+
+  const items: ElevatedItem[] = [];
+
+  if (isCreateFolder) {
+    const folderName = params.newFolderName || 'New folder';
+    let dest = path.join(targetDir, folderName);
+    let counter = 1;
     while (true) {
       try {
         await fs.access(dest);
-        const parsed = path.parse(name);
-        dest = path.join(target, `${parsed.name} (${i})${parsed.ext}`);
-        i++;
+        dest = path.join(targetDir, `${folderName} (${counter})`);
+        counter++;
       } catch {
         break;
       }
     }
-    await copyItem(src, dest);
+    items.push({
+      dest,
+      action: 'createFolder',
+      isDirectory: true,
+    });
+  } else if (params.sources && params.sources.length > 0) {
+    for (const src of params.sources) {
+      const name = path.basename(src);
+      let isDirectory = false;
+      try {
+        const st = await fs.stat(src);
+        isDirectory = st.isDirectory();
+      } catch {}
+
+      const isSameFolder = path.dirname(path.resolve(src)).toLowerCase() === path.resolve(targetDir).toLowerCase();
+      const dest = await getUniqueDestination(targetDir, name, isSameFolder && !isMove);
+
+      items.push({
+        src,
+        dest,
+        action: isMove ? 'move' : 'copy',
+        isDirectory,
+      });
+    }
   }
-  if (mainWindow) mainWindow.webContents.send('copy-progress', { line: 'Copy complete.' });
+
+  if (items.length === 0) {
+    return { success: true, items: [] };
+  }
+
+  const jobId = `jabro_elevated_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  const configFile = path.join(os.tmpdir(), `${jobId}_config.json`);
+  const scriptFile = path.join(os.tmpdir(), `${jobId}_worker.ps1`);
+  const resultFile = path.join(os.tmpdir(), `${jobId}_result.json`);
+
+  const configPayload = {
+    isMove,
+    targetDir,
+    items,
+    resultFile,
+  };
+
+  await fs.writeFile(configFile, JSON.stringify(configPayload, null, 2), 'utf8');
+
+  const psScript = `
+param([string]$ConfigPath)
+
+$result = @{
+    success = $false
+    items = @()
+    error = $null
+}
+
+try {
+    $raw = [System.IO.File]::ReadAllText($ConfigPath, [System.Text.Encoding]::UTF8)
+    $cfg = $raw | ConvertFrom-Json
+    $resPath = [string]$cfg.resultFile
+
+    if (-not (Test-Path -LiteralPath $cfg.targetDir)) {
+        New-Item -ItemType Directory -LiteralPath $cfg.targetDir -Force | Out-Null
+    }
+
+    foreach ($item in $cfg.items) {
+        $src = [string]$item.src
+        $dest = [string]$item.dest
+        $act = [string]$item.action
+        $isDir = [bool]$item.isDirectory
+
+        try {
+            if ($act -eq 'createFolder') {
+                New-Item -ItemType Directory -LiteralPath $dest -Force | Out-Null
+            } elseif ($act -eq 'move') {
+                if (Test-Path -LiteralPath $dest) {
+                    Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction SilentlyContinue
+                }
+                Move-Item -LiteralPath $src -Destination $dest -Force -ErrorAction Stop
+            } else {
+                if ($isDir) {
+                    if (-not (Test-Path -LiteralPath $dest)) {
+                        New-Item -ItemType Directory -LiteralPath $dest -Force | Out-Null
+                    }
+                    $cleanSrc = $src.TrimEnd('\\', '/')
+                    $cleanDest = $dest.TrimEnd('\\', '/')
+                    $rcArgs = @($cleanSrc, $cleanDest, '/E', '/COPY:DAT', '/R:1', '/W:1', '/IS', '/NFL', '/NDL', '/NP')
+                    $rcProc = Start-Process -FilePath "robocopy.exe" -ArgumentList $rcArgs -Wait -NoNewWindow -PassThru
+                    if ($rcProc.ExitCode -ge 8) {
+                        Copy-Item -LiteralPath $src -Destination $dest -Recurse -Force -ErrorAction Stop
+                    }
+                } else {
+                    Copy-Item -LiteralPath $src -Destination $dest -Force -ErrorAction Stop
+                }
+            }
+
+            $result.items += @{
+                src = $src
+                dest = $dest
+                name = [System.IO.Path]::GetFileName($dest)
+                success = $true
+            }
+        } catch {
+            $result.items += @{
+                src = $src
+                dest = $dest
+                name = [System.IO.Path]::GetFileName($src)
+                success = $false
+                error = $_.Exception.Message
+            }
+        }
+    }
+
+    $failed = ($result.items | Where-Object { -not $_.success }).Count
+    if ($failed -eq 0) {
+        $result.success = $true
+    } else {
+        $result.success = $false
+        $result.error = "Some items failed to copy with administrator rights."
+    }
+} catch {
+    $result.success = $false
+    $result.error = $_.Exception.Message
+} finally {
+    if ($resPath) {
+        $out = $result | ConvertTo-Json -Depth 5
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($resPath, $out, $utf8NoBom)
+    }
+}
+`;
+
+  await fs.writeFile(scriptFile, psScript, 'utf8');
+
+  const launcherCmd = `
+try {
+  $p = Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -PassThru -ArgumentList @(
+      '-NoProfile',
+      '-ExecutionPolicy', 'Bypass',
+      '-File', '${scriptFile.replace(/'/g, "''")}',
+      '${configFile.replace(/'/g, "''")}'
+  );
+  if ($p.ExitCode -ne 0) {
+    exit $p.ExitCode;
+  }
+} catch {
+  [Console]::Error.WriteLine('UAC_CANCELLED');
+  exit 1223;
+}
+`;
+
+  return new Promise((resolve, reject) => {
+    const child = spawn('powershell.exe', ['-NoProfile', '-Command', launcherCmd], {
+      windowsHide: true,
+    });
+
+    let stderr = '';
+    child.stderr?.on('data', (d) => {
+      stderr += d.toString();
+    });
+
+    child.on('close', async (code) => {
+      try {
+        if (code === 1223 || stderr.includes('UAC_CANCELLED') || stderr.includes('canceled by the user')) {
+          resolve({
+            success: false,
+            cancelled: true,
+            summary: 'Operation cancelled by user.'
+          });
+          return;
+        }
+
+        let resultData: any = null;
+        try {
+          if (fsSync.existsSync(resultFile)) {
+            const raw = await fs.readFile(resultFile, 'utf8');
+            resultData = JSON.parse(raw.replace(/^\uFEFF/, ''));
+          }
+        } catch (e) {
+          console.error('Failed to read elevated result file:', e);
+        }
+
+        if (resultData && resultData.success) {
+          resolve({
+            success: true,
+            items: resultData.items,
+            summary: isCreateFolder
+              ? `Created folder "${path.basename(items[0]?.dest)}"`
+              : `Successfully ${isMove ? 'moved' : 'copied'} ${resultData.items?.length || 1} items with administrator privileges.`
+          });
+        } else {
+          const errMsg = resultData?.error || `Elevation process exited with code ${code}`;
+          resolve({
+            success: false,
+            error: errMsg,
+            items: resultData?.items || []
+          });
+        }
+      } finally {
+        try { await fs.unlink(configFile); } catch {}
+        try { await fs.unlink(scriptFile); } catch {}
+        try { await fs.unlink(resultFile); } catch {}
+      }
+    });
+
+    child.on('error', (err) => {
+      reject(err);
+    });
+  });
+}
+
+ipcMain.handle('perform-elevated-op', async (_e, params) => {
+  return performElevatedOperation(params);
+});
+
+ipcMain.handle('copy-files', async (_e, { sources, target }: { sources: string[]; target: string }) => {
+  let targetDir = normalizeTargetDirectory(target);
+  try {
+    const tStat = await fs.stat(targetDir);
+    if (!tStat.isDirectory()) {
+      targetDir = path.dirname(targetDir);
+    }
+  } catch {}
+
+  try {
+    await fs.mkdir(targetDir, { recursive: true });
+  } catch (mkdirErr: any) {
+    if (mkdirErr.code === 'EPERM' || mkdirErr.code === 'EACCES') {
+      return {
+        success: false,
+        requiresElevation: true,
+        type: 'copy',
+        target: targetDir,
+        sources,
+        summary: `Administrator permission is required to copy to "${targetDir}".`,
+        errors: [`Permission denied creating or accessing "${targetDir}".`]
+      };
+    }
+  }
+
+  const results: Array<{ src: string; dest?: string; name: string; success: boolean; error?: string }> = [];
+  const errors: string[] = [];
+
+  for (let idx = 0; idx < sources.length; idx++) {
+    const src = sources[idx];
+    const name = path.basename(src);
+
+    if (mainWindow) {
+      mainWindow.webContents.send('copy-progress', {
+        line: `Copying ${name} (${idx + 1}/${sources.length})...`,
+        current: idx + 1,
+        total: sources.length,
+        fileName: name,
+        phase: 'copying'
+      });
+    }
+
+    try {
+      try {
+        await fs.access(src);
+      } catch {
+        throw new Error(`Source "${name}" does not exist or cannot be accessed.`);
+      }
+
+      const isSameFolder = path.dirname(path.resolve(src)).toLowerCase() === path.resolve(targetDir).toLowerCase();
+      const dest = await getUniqueDestination(targetDir, name, isSameFolder);
+
+      await copyItem(src, dest);
+      results.push({ src, dest, name: path.basename(dest), success: true });
+    } catch (err: any) {
+      const friendlyMsg = friendlyErrorMessage(err, src);
+      errors.push(friendlyMsg);
+      results.push({ src, name, success: false, error: friendlyMsg });
+      console.error(`Error copying ${src} to ${targetDir}:`, err);
+    }
+  }
+
+  const successCount = results.filter(r => r.success).length;
+  const failureCount = results.filter(r => !r.success).length;
+
+  let summary = '';
+  if (failureCount === 0) {
+    summary = successCount === 1 
+      ? `Successfully copied "${results[0]?.name}"` 
+      : `Successfully copied ${successCount} items`;
+    if (mainWindow) {
+      mainWindow.webContents.send('copy-progress', { line: summary, phase: 'complete', success: true });
+    }
+  } else if (successCount === 0) {
+    summary = `Failed to copy ${sources.length === 1 ? `"${path.basename(sources[0])}"` : `${sources.length} items`}: ${errors[0]}`;
+    if (mainWindow) {
+      mainWindow.webContents.send('copy-progress', { line: summary, phase: 'failed', success: false, errors });
+    }
+    const isPermissionError = errors.some(e => e.includes('Permission denied') || e.includes('administrator'));
+    if (isPermissionError) {
+      return {
+        success: false,
+        requiresElevation: true,
+        type: 'copy',
+        target: targetDir,
+        sources,
+        summary: `Administrator permission is required to copy to "${targetDir}".`,
+        errors
+      };
+    }
+    throw new Error(summary);
+  } else {
+    summary = `Copied ${successCount} of ${sources.length} items (${failureCount} failed).`;
+    if (mainWindow) {
+      mainWindow.webContents.send('copy-progress', { line: summary, phase: 'partial', success: false, errors });
+    }
+  }
+
+  return {
+    success: failureCount === 0,
+    type: 'copy',
+    target: targetDir,
+    items: results,
+    summary,
+    errors
+  };
 });
 
 ipcMain.handle('move-files', async (_e, { sources, target }: { sources: string[]; target: string }) => {
-  for (const src of sources) {
-    const name = path.basename(src);
-    let dest = path.join(target, name);
-    let i = 1;
-    while (true) {
-      try {
-        await fs.access(dest);
-        const parsed = path.parse(name);
-        dest = path.join(target, `${parsed.name} (${i})${parsed.ext}`);
-        i++;
-      } catch {
-        break;
-      }
+  let targetDir = normalizeTargetDirectory(target);
+  try {
+    const tStat = await fs.stat(targetDir);
+    if (!tStat.isDirectory()) {
+      targetDir = path.dirname(targetDir);
     }
-    try {
-      await fs.rename(src, dest);
-    } catch {
-      await copyItem(src, dest);
-      await removeItem(src);
+  } catch {}
+
+  try {
+    await fs.mkdir(targetDir, { recursive: true });
+  } catch (mkdirErr: any) {
+    if (mkdirErr.code === 'EPERM' || mkdirErr.code === 'EACCES') {
+      return {
+        success: false,
+        requiresElevation: true,
+        type: 'move',
+        target: targetDir,
+        sources,
+        summary: `Administrator permission is required to move to "${targetDir}".`,
+        errors: [`Permission denied creating or accessing "${targetDir}".`]
+      };
     }
   }
-  if (mainWindow) mainWindow.webContents.send('copy-progress', { line: 'Move complete.' });
+
+  const results: Array<{ src: string; dest?: string; name: string; success: boolean; error?: string }> = [];
+  const errors: string[] = [];
+
+  for (let idx = 0; idx < sources.length; idx++) {
+    const src = sources[idx];
+    const name = path.basename(src);
+
+    if (mainWindow) {
+      mainWindow.webContents.send('copy-progress', {
+        line: `Moving ${name} (${idx + 1}/${sources.length})...`,
+        current: idx + 1,
+        total: sources.length,
+        fileName: name,
+        phase: 'moving'
+      });
+    }
+
+    try {
+      try {
+        await fs.access(src);
+      } catch {
+        throw new Error(`Source "${name}" does not exist or cannot be accessed.`);
+      }
+
+      const isSameFolder = path.dirname(path.resolve(src)).toLowerCase() === path.resolve(targetDir).toLowerCase();
+      // Moving to the exact same folder is a safe no-op
+      if (isSameFolder) {
+        results.push({ src, dest: src, name, success: true });
+        continue;
+      }
+
+      const dest = await getUniqueDestination(targetDir, name, false);
+
+      let moved = false;
+      try {
+        await fs.rename(src, dest);
+        moved = true;
+      } catch (renameErr: any) {
+        // Cross-volume (EXDEV) or locked rename: fall back to copy + remove
+        if (renameErr.code === 'EXDEV' || renameErr.code === 'EPERM' || renameErr.code === 'EBUSY') {
+          await copyItem(src, dest);
+          await removeItem(src);
+          moved = true;
+        } else {
+          throw renameErr;
+        }
+      }
+
+      if (moved) {
+        results.push({ src, dest, name: path.basename(dest), success: true });
+      }
+    } catch (err: any) {
+      const friendlyMsg = friendlyErrorMessage(err, src);
+      errors.push(friendlyMsg);
+      results.push({ src, name, success: false, error: friendlyMsg });
+      console.error(`Error moving ${src} to ${targetDir}:`, err);
+    }
+  }
+
+  const successCount = results.filter(r => r.success).length;
+  const failureCount = results.filter(r => !r.success).length;
+
+  let summary = '';
+  if (failureCount === 0) {
+    summary = successCount === 1 
+      ? `Successfully moved "${results[0]?.name}"` 
+      : `Successfully moved ${successCount} items`;
+    if (mainWindow) {
+      mainWindow.webContents.send('copy-progress', { line: summary, phase: 'complete', success: true });
+    }
+  } else if (successCount === 0) {
+    summary = `Failed to move ${sources.length === 1 ? `"${path.basename(sources[0])}"` : `${sources.length} items`}: ${errors[0]}`;
+    if (mainWindow) {
+      mainWindow.webContents.send('copy-progress', { line: summary, phase: 'failed', success: false, errors });
+    }
+    const isPermissionError = errors.some(e => e.includes('Permission denied') || e.includes('administrator'));
+    if (isPermissionError) {
+      return {
+        success: false,
+        requiresElevation: true,
+        type: 'move',
+        target: targetDir,
+        sources,
+        summary: `Administrator permission is required to move to "${targetDir}".`,
+        errors
+      };
+    }
+    throw new Error(summary);
+  } else {
+    summary = `Moved ${successCount} of ${sources.length} items (${failureCount} failed).`;
+    if (mainWindow) {
+      mainWindow.webContents.send('copy-progress', { line: summary, phase: 'partial', success: false, errors });
+    }
+  }
+
+  return {
+    success: failureCount === 0,
+    type: 'move',
+    target: targetDir,
+    items: results,
+    summary,
+    errors
+  };
 });
 
 ipcMain.handle('create-folder', async (_e, targetDir: string) => {
   try {
     const newPath = await createNewFolder(targetDir);
     return newPath;
-  } catch (err) {
+  } catch (err: any) {
     console.error('create-folder failed for', targetDir, err);
+    if (err.code === 'EPERM' || err.code === 'EACCES') {
+      return {
+        success: false,
+        requiresElevation: true,
+        target: targetDir,
+        error: 'Administrator permission required to create folder here.'
+      };
+    }
     throw err;
   }
 });

@@ -273,3 +273,47 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #52525b;
 }
+
+/* Visual cue for cut items waiting to be moved */
+.file-row.is-cut {
+  opacity: 0.45;
+  filter: grayscale(0.5);
+}
+
+/* Drag over folder drop target highlight */
+.file-row.drop-target {
+  background: rgba(59, 130, 246, 0.22) !important;
+  outline: 2px dashed #60a5fa;
+  outline-offset: -2px;
+}
+
+/* Flash animation when item is pasted or copied into the folder */
+@keyframes pasteHighlight {
+  0% {
+    background: rgba(34, 197, 94, 0.35);
+  }
+  100% {
+    background: transparent;
+  }
+}
+
+.file-row.just-pasted {
+  animation: pasteHighlight 2.2s ease-out;
+}
+
+/* Toast animations */
+@keyframes toastSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.toast-enter {
+  animation: toastSlideIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+

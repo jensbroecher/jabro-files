@@ -29,9 +29,12 @@
     "vite-plugin-electron-renderer": "^0.14.6"
   },
   "dependencies": {
+    "@mkkellogg/gaussian-splats-3d": "^0.4.7",
+    "@types/three": "^0.186.0",
     "lucide-react": "^0.513.0",
     "react": "^19.2.7",
-    "react-dom": "^19.2.7"
+    "react-dom": "^19.2.7",
+    "three": "^0.186.1"
   },
   "main": "dist-electron/main.js",
   "build": {
