@@ -14,8 +14,9 @@ const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Enable SharedArrayBuffer feature for WebAssembly workers
+// Enable SharedArrayBuffer feature for WebAssembly workers and allow local file access
 app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
+app.commandLine.appendSwitch('allow-file-access-from-files');
 
 // Register privileged custom scheme for streaming local media, PDFs, and 3D assets
 protocol.registerSchemesAsPrivileged([
@@ -119,6 +120,7 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       plugins: true, // Enables Chromium's built-in PDF viewer plugin
+      webSecurity: false, // Ensures local WASM, Draco workers, and textures load without origin restrictions
     },
   };
 
@@ -241,6 +243,8 @@ app.whenReady().then(() => {
       else if (ext === '.dds') mimeType = 'image/vnd-ms.dds';
       else if (ext === '.glb') mimeType = 'model/gltf-binary';
       else if (ext === '.gltf') mimeType = 'model/gltf+json';
+      else if (ext === '.wasm') mimeType = 'application/wasm';
+      else if (ext === '.js') mimeType = 'application/javascript';
       else if (ext === '.obj') mimeType = 'text/plain';
       else if (ext === '.stl' || ext === '.ply' || ext === '.splat' || ext === '.ksplat' || ext === '.spz' || ext === '.fbx') {
         mimeType = 'application/octet-stream';

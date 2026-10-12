@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { setupGLTFLoader } from '../utils/draco';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
@@ -421,7 +422,8 @@ export const Background3DSnapshotGenerator: React.FC<Background3DSnapshotGenerat
 
             const cleanExt = ext.replace('.', '');
             if (cleanExt === 'glb' || cleanExt === 'gltf') {
-              new GLTFLoader(loadingManager).load(mediaUrl, (gltf) => onModelLoaded(gltf.scene), undefined, onError);
+              const gltfLoader = setupGLTFLoader(new GLTFLoader(loadingManager));
+              gltfLoader.load(mediaUrl, (gltf) => onModelLoaded(gltf.scene), undefined, onError);
             } else if (cleanExt === 'obj') {
               new OBJLoader(loadingManager).load(mediaUrl, onModelLoaded, undefined, onError);
             } else if (cleanExt === 'stl') {

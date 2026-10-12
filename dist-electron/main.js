@@ -10,7 +10,7 @@ import { promisify as _ } from "node:util";
 import { fileURLToPath as v } from "node:url";
 //#region electron/main.ts
 var y = _(h), b = v(import.meta.url), x = l.dirname(b);
-t.commandLine.appendSwitch("enable-features", "SharedArrayBuffer"), a.registerSchemesAsPrivileged([{
+t.commandLine.appendSwitch("enable-features", "SharedArrayBuffer"), t.commandLine.appendSwitch("allow-file-access-from-files"), a.registerSchemesAsPrivileged([{
 	scheme: "jabro-media",
 	privileges: {
 		standard: !0,
@@ -74,7 +74,8 @@ function O() {
 			preload: S(),
 			contextIsolation: !0,
 			nodeIntegration: !1,
-			plugins: !0
+			plugins: !0,
+			webSecurity: !1
 		}
 	};
 	t && (n.x = t.x, n.y = t.y, n.width = t.width, n.height = t.height), w = new e(n), t && t.isMaximized && w.maximize();
@@ -120,7 +121,7 @@ t.whenReady().then(() => {
 			}
 			t &&= ((t.startsWith("\\\\?\\") || t.startsWith("//?/")) && (t = t.slice(4)), l.normalize(t));
 			let r = await u.stat(t), i = l.extname(t).toLowerCase(), a = new Headers(), o = "";
-			i === ".pdf" ? o = "application/pdf" : i === ".jpg" || i === ".jpeg" ? o = "image/jpeg" : i === ".png" ? o = "image/png" : i === ".webp" ? o = "image/webp" : i === ".gif" ? o = "image/gif" : i === ".svg" ? o = "image/svg+xml" : i === ".bmp" ? o = "image/bmp" : i === ".ico" ? o = "image/x-icon" : i === ".tga" ? o = "image/x-tga" : i === ".dds" ? o = "image/vnd-ms.dds" : i === ".glb" ? o = "model/gltf-binary" : i === ".gltf" ? o = "model/gltf+json" : i === ".obj" ? o = "text/plain" : (i === ".stl" || i === ".ply" || i === ".splat" || i === ".ksplat" || i === ".spz" || i === ".fbx") && (o = "application/octet-stream"), o && a.set("content-type", o), a.set("access-control-allow-origin", "*"), a.set("access-control-expose-headers", "Content-Length, Content-Range, Accept-Ranges"), a.set("accept-ranges", "bytes"), a.set("Cross-Origin-Resource-Policy", "cross-origin");
+			i === ".pdf" ? o = "application/pdf" : i === ".jpg" || i === ".jpeg" ? o = "image/jpeg" : i === ".png" ? o = "image/png" : i === ".webp" ? o = "image/webp" : i === ".gif" ? o = "image/gif" : i === ".svg" ? o = "image/svg+xml" : i === ".bmp" ? o = "image/bmp" : i === ".ico" ? o = "image/x-icon" : i === ".tga" ? o = "image/x-tga" : i === ".dds" ? o = "image/vnd-ms.dds" : i === ".glb" ? o = "model/gltf-binary" : i === ".gltf" ? o = "model/gltf+json" : i === ".wasm" ? o = "application/wasm" : i === ".js" ? o = "application/javascript" : i === ".obj" ? o = "text/plain" : (i === ".stl" || i === ".ply" || i === ".splat" || i === ".ksplat" || i === ".spz" || i === ".fbx") && (o = "application/octet-stream"), o && a.set("content-type", o), a.set("access-control-allow-origin", "*"), a.set("access-control-expose-headers", "Content-Length, Content-Range, Accept-Ranges"), a.set("accept-ranges", "bytes"), a.set("Cross-Origin-Resource-Policy", "cross-origin");
 			let s = e.headers.get("range"), c = 200, p;
 			if (s) {
 				let e = s.replace(/bytes=/, "").split("-"), n = parseInt(e[0], 10), i = e[1] ? parseInt(e[1], 10) : r.size - 1;

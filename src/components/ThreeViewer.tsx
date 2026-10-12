@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { setupGLTFLoader } from '../utils/draco';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
@@ -104,6 +105,22 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
   const [autoRotate, setAutoRotate] = useState(false);
   const [turntableSpeed, setTurntableSpeed] = useState<0.5 | 1 | 2>(1);
   const [pointCloudMode, setPointCloudMode] = useState(false);
+
+  const autoRotateRef = useRef(autoRotate);
+  const turntableSpeedRef = useRef(turntableSpeed);
+  const pointCloudModeRef = useRef(pointCloudMode);
+
+  useEffect(() => {
+    autoRotateRef.current = autoRotate;
+  }, [autoRotate]);
+
+  useEffect(() => {
+    turntableSpeedRef.current = turntableSpeed;
+  }, [turntableSpeed]);
+
+  useEffect(() => {
+    pointCloudModeRef.current = pointCloudMode;
+  }, [pointCloudMode]);
   const [bgPreset, setBgPreset] = useState<BgPreset>('mist');
   const [showBgMenu, setShowBgMenu] = useState(false);
   const [lightPreset, setLightPreset] = useState<LightPreset>('studio');
@@ -519,8 +536,8 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
       if (viewer.controls) {
         viewer.controls.maxPolarAngle = Math.PI;
         viewer.controls.minPolarAngle = 0;
-        viewer.controls.autoRotate = autoRotate;
-        viewer.controls.autoRotateSpeed = turntableSpeed * 1.5;
+        viewer.controls.autoRotate = autoRotateRef.current;
+        viewer.controls.autoRotateSpeed = turntableSpeedRef.current * 1.5;
       }
 
       // Determine scene format
@@ -542,7 +559,7 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
       viewer.start();
       try {
         splatRenderer.setClearColor(new THREE.Color(conf.color), 1.0);
-        if (pointCloudMode) {
+        if (pointCloudModeRef.current) {
           viewer.getSplatMesh()?.setPointCloudModeEnabled(true);
         }
       } catch {}
@@ -595,7 +612,7 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
       setErrorMessage(err?.message || 'Failed to initialize Gaussian Splatting scene.');
       setLoading(false);
     }
-  }, [ext, mediaUrl, fileName, autoRotate, turntableSpeed, pointCloudMode, filePath]);
+  }, [ext, mediaUrl, fileName, filePath]);
 
   // Standard Three.js loader for GLTF, OBJ, STL, PLY, FBX
   const initStandardThree = useCallback(() => {
@@ -639,8 +656,8 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
     controls.rotateSpeed = 0.8;
     controls.zoomSpeed = 1.2;
     controls.panSpeed = 0.8;
-    controls.autoRotate = autoRotate;
-    controls.autoRotateSpeed = turntableSpeed * 1.5;
+    controls.autoRotate = autoRotateRef.current;
+    controls.autoRotateSpeed = turntableSpeedRef.current * 1.5;
     controlsRef.current = controls;
 
     // Lighting setup via configured preset & intensity
@@ -838,7 +855,7 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
     };
 
     if (ext === 'gltf' || ext === 'glb') {
-      const loader = new GLTFLoader();
+      const loader = setupGLTFLoader(new GLTFLoader());
       loader.load(mediaUrl, (gltf) => setupModel(gltf.scene, gltf.animations), onProgress, onError);
     } else if (ext === 'obj') {
       const loader = new OBJLoader();
