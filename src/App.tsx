@@ -3,7 +3,8 @@ import {
   ArrowLeft, ArrowRight, ArrowUp, RefreshCw, FolderOpen, 
   HardDrive, Folder, File, Search, X, Calculator, ChevronDown,
   CheckCircle2, AlertTriangle, AlertCircle, Copy, Scissors, Clipboard, Loader2, Info,
-  ShieldAlert, ShieldCheck, Box, Sparkles, FileText
+  ShieldAlert, ShieldCheck, Box, Sparkles, FileText,
+  Plus, ChevronRight, ChevronLeft, LayoutGrid, List, Flame, Edit3, ExternalLink, Eye, PieChart
 } from 'lucide-react';
 import { ThreeViewer } from './components/ThreeViewer';
 
@@ -13,6 +14,21 @@ interface ToastInfo {
   title: string;
   message: string;
   details?: string;
+}
+
+interface TabInfo {
+  id: string;
+  path: string;
+  history: string[];
+  historyIndex: number;
+}
+
+interface LargestFileItem {
+  name: string;
+  path: string;
+  size: number;
+  mtime: string;
+  ext: string;
 }
 
 // Types (match preload)
@@ -118,6 +134,175 @@ function matchesSearch(name: string, search: string): boolean {
   });
 }
 
+function getTabTitle(p: string): string {
+  const trimmed = p.replace(/[\\/]+$/, '');
+  const parts = trimmed.split(/[\\/]/).filter(Boolean);
+  if (parts.length === 0) return p;
+  return parts[parts.length - 1] || p;
+}
+
+function parseBreadcrumbs(pathStr: string): Array<{ name: string; fullPath: string }> {
+  const normalized = pathStr.replace(/\//g, '\\');
+  const parts = normalized.split('\\').filter(Boolean);
+  const breadcrumbs: Array<{ name: string; fullPath: string }> = [];
+
+  let accumulated = '';
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    if (i === 0 && /^[a-zA-Z]:$/.test(part)) {
+      accumulated = part + '\\';
+      breadcrumbs.push({ name: part, fullPath: accumulated });
+    } else {
+      accumulated = accumulated ? (accumulated.endsWith('\\') ? accumulated + part : accumulated + '\\' + part) : part;
+      breadcrumbs.push({ name: part, fullPath: accumulated });
+    }
+  }
+  return breadcrumbs.length > 0 ? breadcrumbs : [{ name: pathStr, fullPath: pathStr }];
+}
+
+const TreemapView: React.FC<{
+  entries: DirEntry[];
+  sizeCache: Record<string, SizeResult>;
+  onNavigate: (path: string) => void;
+  onOpen: (entry: DirEntry) => void;
+  onSelect: (path: string) => void;
+  selectedPath: string | null;
+  onCalculateAll: () => void;
+}> = ({ entries, sizeCache, onNavigate, onOpen, onSelect, selectedPath, onCalculateAll }) => {
+  const items = useMemo(() => {
+    const list = entries.map(e => {
+      const computedSize = e.isDirectory ? (sizeCache[e.path]?.size ?? e.size ?? 0) : (e.size ?? 0);
+      return { ...e, computedSize };
+    });
+    list.sort((a, b) => b.computedSize - a.computedSize);
+    return list;
+  }, [entries, sizeCache]);
+
+  const totalBytes = useMemo(() => {
+    return items.reduce((acc, i) => acc + i.computedSize, 0);
+  }, [items]);
+
+  const hasUncalculatedDirs = useMemo(() => {
+    return entries.some(e => e.isDirectory && sizeCache[e.path] == null && e.size == null);
+  }, [entries, sizeCache]);
+
+  if (items.length === 0) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center text-zinc-500 gap-2 p-8">
+        <Folder size={48} className="text-zinc-600" />
+        <div className="text-sm font-medium">No items to analyze in this directory</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="h-full flex flex-col overflow-hidden bg-[#0c0c0e] p-3 gap-2.5">
+      {/* Information Header & Uncalculated Sizes Warning */}
+      <div className="flex items-center justify-between px-2 text-xs text-zinc-400">
+        <div className="flex items-center gap-2">
+          <PieChart size={14} className="text-blue-400" />
+          <span>Total Size: <strong className="text-zinc-200">{formatSize(totalBytes)}</strong></span>
+          <span>•</span>
+          <span>{items.length} items</span>
+        </div>
+        {hasUncalculatedDirs && (
+          <button
+            onClick={onCalculateAll}
+            className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 transition text-[11px] font-medium cursor-pointer"
+            title="Scan recursive sizes of all subfolders to get accurate visualization"
+          >
+            <Calculator size={12} />
+            <span>Calculate Folder Sizes for Complete Map</span>
+          </button>
+        )}
+      </div>
+
+      {/* Visual Treemap Tiles */}
+      <div className="flex-1 overflow-auto flex flex-wrap gap-2 content-start p-1.5 rounded-lg bg-[#111114] border border-zinc-800/80">
+        {items.map((item) => {
+          const pct = totalBytes > 0 ? (item.computedSize / totalBytes) * 100 : 0;
+          const isSelected = selectedPath === item.path;
+
+          let tileStyle = 'bg-zinc-850 border-zinc-700/50 text-zinc-200';
+          if (item.isDirectory) {
+            tileStyle = 'bg-gradient-to-br from-blue-950/70 to-indigo-950/40 border-blue-500/30 text-blue-200 hover:border-blue-400';
+          } else {
+            const ext = item.ext?.toLowerCase() || '';
+            if (['.splat', '.ksplat', '.spz'].includes(ext)) {
+              tileStyle = 'bg-gradient-to-br from-purple-950/70 to-violet-950/40 border-violet-500/30 text-violet-200 hover:border-violet-400';
+            } else if (['.gltf', '.glb', '.obj', '.stl', '.ply', '.fbx'].includes(ext)) {
+              tileStyle = 'bg-gradient-to-br from-indigo-950/70 to-blue-950/40 border-indigo-500/30 text-indigo-200 hover:border-indigo-400';
+            } else if (['.mp4', '.mkv', '.avi', '.mov', '.mp3', '.flac', '.wav'].includes(ext)) {
+              tileStyle = 'bg-gradient-to-br from-amber-950/70 to-orange-950/40 border-amber-500/30 text-amber-200 hover:border-amber-400';
+            } else if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'].includes(ext)) {
+              tileStyle = 'bg-gradient-to-br from-cyan-950/70 to-teal-950/40 border-cyan-500/30 text-cyan-200 hover:border-cyan-400';
+            } else if (['.zip', '.rar', '.7z', '.tar', '.gz'].includes(ext)) {
+              tileStyle = 'bg-gradient-to-br from-rose-950/70 to-pink-950/40 border-rose-500/30 text-rose-200 hover:border-rose-400';
+            } else {
+              tileStyle = 'bg-gradient-to-br from-zinc-900 to-zinc-800/80 border-zinc-700/50 text-zinc-200 hover:border-zinc-500';
+            }
+          }
+
+          const flexGrow = Math.max(1, Math.min(24, Math.round(pct * 2)));
+          const minW = pct > 20 ? 220 : (pct > 5 ? 160 : 120);
+          const minH = pct > 20 ? 120 : (pct > 5 ? 85 : 65);
+
+          return (
+            <div
+              key={item.path}
+              onClick={() => {
+                onSelect(item.path);
+                if (item.isDirectory) {
+                  onNavigate(item.path);
+                } else {
+                  onOpen(item);
+                }
+              }}
+              style={{
+                flexGrow,
+                flexBasis: `${minW}px`,
+                minHeight: `${minH}px`,
+              }}
+              className={`p-2.5 rounded-lg border transition-all duration-150 cursor-pointer flex flex-col justify-between overflow-hidden relative group select-none shadow-xs ${tileStyle} ${
+                isSelected ? 'ring-2 ring-blue-400 shadow-lg' : ''
+              }`}
+              title={`${item.name}\nSize: ${formatSize(item.computedSize)} (${pct.toFixed(1)}%)\nPath: ${item.path}`}
+            >
+              <div className="flex items-start justify-between gap-1.5 z-10">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  {getIcon(item)}
+                  <span className="font-medium text-xs truncate leading-snug">{item.name}</span>
+                </div>
+                {pct > 0.5 && (
+                  <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-black/40 text-zinc-300 font-semibold flex-shrink-0">
+                    {pct.toFixed(pct >= 10 ? 0 : 1)}%
+                  </span>
+                )}
+              </div>
+
+              <div className="flex items-end justify-between gap-2 z-10 pt-2">
+                <div className="text-xs font-semibold tabular-nums text-white">
+                  {formatSize(item.computedSize)}
+                </div>
+                {item.isDirectory && (
+                  <span className="text-[10px] text-zinc-400">
+                    {(item.dirCount || 0) + (item.fileCount || 0) > 0 ? `${(item.dirCount || 0) + (item.fileCount || 0)} items` : 'folder'}
+                  </span>
+                )}
+                {!item.isDirectory && item.ext && (
+                  <span className="text-[10px] uppercase font-mono text-zinc-400">
+                    {item.ext.replace('.', '')}
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};
+
 // QUICK_ACCESS is now dynamic from state + persisted pinned folders (loaded from main process defaults)
 
 export default function App() {
@@ -138,6 +323,25 @@ export default function App() {
   const [clipboard, setClipboard] = useState<{ paths: string[]; isCut: boolean } | null>(null);
   const [dualPane, setDualPane] = useState(false);
   const [isRightLoading, setIsRightLoading] = useState(false);
+
+  // Multi-Tab browsing state
+  const [tabs, setTabs] = useState<TabInfo[]>([
+    { id: 'tab-1', path: 'H:\\AppDev\\size-browser', history: ['H:\\AppDev\\size-browser'], historyIndex: 0 }
+  ]);
+  const [activeTabId, setActiveTabId] = useState('tab-1');
+
+  // Interactive Breadcrumbs & inline path editing
+  const [isEditingPath, setIsEditingPath] = useState(false);
+  const [pathInputValue, setPathInputValue] = useState('H:\\AppDev\\size-browser');
+
+  // View Mode: Table vs Interactive Treemap
+  const [viewMode, setViewMode] = useState<'table' | 'treemap'>('table');
+
+  // Space Hogs (Find Largest Files)
+  const [showLargestModal, setShowLargestModal] = useState(false);
+  const [largestFiles, setLargestFiles] = useState<LargestFileItem[]>([]);
+  const [largestLoading, setLargestLoading] = useState(false);
+  const [largestFilter, setLargestFilter] = useState('');
 
   // Customizable Quick Access (pinned folders). Persisted in localStorage.
   const [quickAccess, setQuickAccess] = useState<Array<{ label: string; path: string }>>([]);
@@ -728,6 +932,85 @@ export default function App() {
     }
   }, [activePaneIsRight, rightEntries, entries, calculateFolderSize]);
 
+  // Keep path input value in sync with active path
+  useEffect(() => {
+    setPathInputValue(activeCurrentPath);
+  }, [activeCurrentPath]);
+
+  // Keep active tab state synchronized with current path and history
+  useEffect(() => {
+    setTabs(prev => prev.map(t => t.id === activeTabId ? { ...t, path: currentPath, history, historyIndex } : t));
+  }, [currentPath, history, historyIndex, activeTabId]);
+
+  const addNewTab = useCallback(() => {
+    const newId = 'tab-' + Date.now();
+    const newTab: TabInfo = {
+      id: newId,
+      path: currentPath,
+      history: [currentPath],
+      historyIndex: 0,
+    };
+    setTabs(prev => [...prev, newTab]);
+    setActiveTabId(newId);
+  }, [currentPath]);
+
+  const closeTab = useCallback((tabId: string, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    if (tabs.length <= 1) return;
+    const idx = tabs.findIndex(t => t.id === tabId);
+    const nextTabs = tabs.filter(t => t.id !== tabId);
+    setTabs(nextTabs);
+    if (activeTabId === tabId) {
+      const nextActive = nextTabs[Math.max(0, idx - 1)] || nextTabs[0];
+      if (nextActive) {
+        setActiveTabId(nextActive.id);
+        setCurrentPath(nextActive.path);
+        setHistory(nextActive.history);
+        setHistoryIndex(nextActive.historyIndex);
+        loadDirectory(nextActive.path);
+      }
+    }
+  }, [tabs, activeTabId, loadDirectory]);
+
+  const switchTab = useCallback((tab: TabInfo) => {
+    setActiveTabId(tab.id);
+    setCurrentPath(tab.path);
+    setHistory(tab.history);
+    setHistoryIndex(tab.historyIndex);
+    loadDirectory(tab.path);
+  }, [loadDirectory]);
+
+  // Space Hogs (Find Largest Files)
+  const openLargestFinder = useCallback(async () => {
+    setShowLargestModal(true);
+    setLargestLoading(true);
+    setLargestFilter('');
+    try {
+      const target = activePaneIsRight ? rightCurrentPath : currentPath;
+      if (api?.findLargestFiles) {
+        const res = await api.findLargestFiles(target, 50);
+        setLargestFiles(res);
+      } else {
+        const list = (activePaneIsRight ? rightEntries : entries)
+          .filter(e => !e.isDirectory && (e.size || 0) > 0)
+          .map(e => ({ name: e.name, path: e.path, size: e.size || 0, mtime: e.mtime, ext: e.ext || '' }))
+          .sort((a, b) => b.size - a.size);
+        setLargestFiles(list);
+      }
+    } catch (err) {
+      console.error('findLargestFiles error:', err);
+      setLargestFiles([]);
+    } finally {
+      setLargestLoading(false);
+    }
+  }, [activePaneIsRight, rightCurrentPath, currentPath, rightEntries, entries]);
+
+  const filteredLargestFiles = useMemo(() => {
+    if (!largestFilter.trim()) return largestFiles;
+    const q = largestFilter.toLowerCase().trim();
+    return largestFiles.filter(f => f.name.toLowerCase().includes(q) || f.path.toLowerCase().includes(q));
+  }, [largestFiles, largestFilter]);
+
   const handleConfirmElevation = useCallback(async () => {
     if (!elevationPrompt) return;
     setIsElevating(true);
@@ -1087,6 +1370,39 @@ export default function App() {
     return res;
   }, [rightEntries, rightFilter, rightSortBy, rightSortDir]);
 
+  // Max sizes for proportional heatmap bars
+  const leftMaxSize = useMemo(() => {
+    let m = 0;
+    for (const e of visibleEntries) {
+      const s = e.isDirectory ? (sizeCache[e.path]?.size ?? e.size ?? 0) : (e.size ?? 0);
+      if (s > m) m = s;
+    }
+    return m > 0 ? m : 1;
+  }, [visibleEntries, sizeCache]);
+
+  const rightMaxSize = useMemo(() => {
+    let m = 0;
+    for (const e of rightVisibleEntries) {
+      const s = e.isDirectory ? (sizeCache[e.path]?.size ?? e.size ?? 0) : (e.size ?? 0);
+      if (s > m) m = s;
+    }
+    return m > 0 ? m : 1;
+  }, [rightVisibleEntries, sizeCache]);
+
+  // Quick Look cycling through files in active view
+  const navigateViewer = useCallback((direction: -1 | 1) => {
+    if (!viewer) return;
+    const list = activePaneIsRight ? rightVisibleEntries : visibleEntries;
+    const currentIndex = list.findIndex(e => e.path === viewer.path);
+    if (currentIndex === -1) return;
+    const nextIndex = currentIndex + direction;
+    if (nextIndex >= 0 && nextIndex < list.length) {
+      const nextEntry = list[nextIndex];
+      if (activePaneIsRight) setRightSelected(nextEntry.path); else setSelected(nextEntry.path);
+      openEntry(nextEntry);
+    }
+  }, [viewer, activePaneIsRight, rightVisibleEntries, visibleEntries, openEntry]);
+
   const stats = useMemo(() => {
     const folderCount = entries.filter(e => e.isDirectory).length;
     const fileCount = entries.length - folderCount;
@@ -1096,10 +1412,56 @@ export default function App() {
     return { folderCount, fileCount, filesTotalBytes };
   }, [entries]);
 
-  // Keyboard shortcuts — respect active pane for nav / refresh / calc
+  // Keyboard shortcuts — respect active pane for nav / refresh / calc / spacebar Quick Look
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Backspace' && document.activeElement?.tagName !== 'INPUT') {
+      const isInput = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName || '');
+
+      // Spacebar Quick Look toggle
+      if (e.code === 'Space' && !isInput) {
+        e.preventDefault();
+        if (viewer) {
+          setViewer(null);
+        } else {
+          const list = activePaneIsRight ? rightVisibleEntries : visibleEntries;
+          const currentSel = activePaneIsRight ? rightSelected : selected;
+          const target = list.find(x => x.path === currentSel);
+          if (target) {
+            openEntry(target);
+          }
+        }
+        return;
+      }
+
+      // Quick Look arrow navigation
+      if (viewer) {
+        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+          e.preventDefault();
+          navigateViewer(1);
+          return;
+        }
+        if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          navigateViewer(-1);
+          return;
+        }
+      }
+
+      // Ctrl+T for new tab
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 't') {
+        e.preventDefault();
+        addNewTab();
+        return;
+      }
+
+      // Ctrl+L to focus/edit path bar
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'l') {
+        e.preventDefault();
+        setIsEditingPath(true);
+        return;
+      }
+
+      if (e.key === 'Backspace' && !isInput) {
         activeGoUp();
       }
       if (e.key === 'F5') {
@@ -1117,6 +1479,7 @@ export default function App() {
           setFilter('');
           setSelected(null);
           setRightSelected(null);
+          setIsEditingPath(false);
         }
       }
       if (e.key === 'Enter' && !activePaneIsRight && selected) {
@@ -1128,7 +1491,6 @@ export default function App() {
         const ent = rightEntries.find(x => x.path === rightSelected);
         if (ent) openEntry(ent);
       }
-      const isInput = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName || '');
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
         if (isInput) return;
         e.preventDefault();
@@ -1147,7 +1509,12 @@ export default function App() {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [activeGoUp, activeRefresh, activeCalculateAllVisibleSizes, selected, entries, copyToClipboard, pasteFromClipboard, activePaneIsRight, rightSelected, rightEntries, navigateRight, viewer, activePane]);
+  }, [
+    activeGoUp, activeRefresh, activeCalculateAllVisibleSizes, selected, entries, 
+    copyToClipboard, pasteFromClipboard, activePaneIsRight, rightSelected, rightEntries, 
+    navigateRight, viewer, activePane, rightVisibleEntries, visibleEntries, navigateViewer, 
+    addNewTab, openEntry
+  ]);
 
   const toggleSort = (key: 'name' | 'size' | 'mtime') => {
     if (sortBy === key) {
@@ -1415,26 +1782,110 @@ export default function App() {
         <div className="flex-1 h-full" style={{ WebkitAppRegion: 'drag' } as any} />
       </div>
 
-      {/* Path bar — shared between panes. Shows/edits the path of the active pane. */}
-      <div className="flex items-center gap-2 px-3 py-2 bg-[#111113] border-b border-zinc-800">
-        <input
-          className="path-bar flex-1 px-3 py-1 text-[13px]"
-          value={activeCurrentPath}
-          onChange={(e) => {
-            if (activePaneIsRight) {
-              setRightCurrentPath(e.target.value);
-            } else {
-              setCurrentPath(e.target.value);
-            }
-          }}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              activeNavigate(activePaneIsRight ? rightCurrentPath : currentPath);
-            }
-          }}
-          spellCheck={false}
-          title={activePaneIsRight ? 'Right pane path (active)' : 'Left pane path (active)'}
-        />
+      {/* Browser-style Multi-Tabs Bar */}
+      <div className="flex items-center px-2 pt-1.5 bg-[#141416] border-b border-zinc-800 gap-1 overflow-x-auto select-none no-scrollbar">
+        {tabs.map((tab) => {
+          const isActive = tab.id === activeTabId;
+          return (
+            <div
+              key={tab.id}
+              onClick={() => switchTab(tab)}
+              className={`group flex items-center gap-2 px-3 py-1.5 rounded-t-lg text-xs cursor-pointer border-t border-x transition-all duration-150 max-w-[200px] min-w-[110px] ${
+                isActive
+                  ? 'bg-[#111113] border-zinc-700/80 text-white font-semibold shadow-xs -mb-[1px] border-b-transparent'
+                  : 'bg-zinc-900/40 border-transparent text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-200'
+              }`}
+              title={tab.path}
+            >
+              <Folder size={13} className={isActive ? 'text-blue-400 flex-shrink-0' : 'text-zinc-500 flex-shrink-0'} />
+              <span className="truncate flex-1 min-w-0">{getTabTitle(tab.path)}</span>
+              {tabs.length > 1 && (
+                <button
+                  onClick={(e) => closeTab(tab.id, e)}
+                  className="opacity-0 group-hover:opacity-100 hover:bg-zinc-700 text-zinc-400 hover:text-white rounded p-0.5 leading-none transition cursor-pointer"
+                  title="Close Tab"
+                >
+                  <X size={11} />
+                </button>
+              )}
+            </div>
+          );
+        })}
+        <button
+          onClick={addNewTab}
+          className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-white transition ml-0.5 cursor-pointer"
+          title="Open New Tab (Ctrl+T)"
+        >
+          <Plus size={14} />
+        </button>
+      </div>
+
+      {/* Path bar with interactive breadcrumbs and text edit toggle */}
+      <div className="flex items-center gap-2 px-3 py-1.5 bg-[#111113] border-b border-zinc-800">
+        {isEditingPath ? (
+          <input
+            className="path-bar flex-1 px-3 py-1 text-[13px] bg-zinc-900 border border-blue-500/50 rounded outline-none"
+            autoFocus
+            value={pathInputValue}
+            onChange={(e) => setPathInputValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                activeNavigate(pathInputValue);
+                setIsEditingPath(false);
+              } else if (e.key === 'Escape') {
+                setPathInputValue(activeCurrentPath);
+                setIsEditingPath(false);
+              }
+            }}
+            onBlur={() => setIsEditingPath(false)}
+            spellCheck={false}
+          />
+        ) : (
+          <div className="flex items-center flex-1 min-w-0 bg-zinc-900/60 border border-zinc-800/80 rounded px-2 py-0.5">
+            <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5">
+              {parseBreadcrumbs(activeCurrentPath).map((b, idx, arr) => (
+                <React.Fragment key={b.fullPath}>
+                  <button
+                    onClick={() => activeNavigate(b.fullPath)}
+                    className="px-1.5 py-0.5 rounded text-zinc-300 hover:text-white hover:bg-zinc-800 transition text-[12px] font-medium flex items-center cursor-pointer whitespace-nowrap"
+                    title={b.fullPath}
+                  >
+                    {b.name}
+                  </button>
+                  {idx < arr.length - 1 && (
+                    <ChevronRight size={12} className="text-zinc-600 flex-shrink-0" />
+                  )}
+                </React.Fragment>
+              ))}
+            </div>
+            {/* Click empty space to edit as text */}
+            <div
+              className="flex-1 h-full min-h-[24px] cursor-text"
+              onClick={() => setIsEditingPath(true)}
+              title="Click to edit path as text"
+            />
+            {/* Action buttons */}
+            <div className="flex items-center gap-0.5 ml-1">
+              <button
+                onClick={() => setIsEditingPath(true)}
+                className="p-1 rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 cursor-pointer"
+                title="Edit path as text (Ctrl+L)"
+              >
+                <Edit3 size={13} />
+              </button>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(activeCurrentPath);
+                  showToast({ type: 'info', title: 'Path Copied', message: activeCurrentPath }, 2000);
+                }}
+                className="p-1 rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 cursor-pointer"
+                title="Copy full path"
+              >
+                <Copy size={13} />
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex flex-1 overflow-hidden">

@@ -7,8 +7,17 @@ import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
 import * as GaussianSplats3D from '@mkkellogg/gaussian-splats-3d';
 import { 
-  RotateCw, RotateCcw, ArrowUpDown, Grid, Eye, Box, Sparkles, Loader2, AlertCircle, RefreshCw, Disc
+  RotateCw, RotateCcw, ArrowUpDown, Grid, Eye, Box, Sparkles, Loader2, AlertCircle, RefreshCw, Disc,
+  Camera, Layers, Palette
 } from 'lucide-react';
+
+type BgPreset = 'studio' | 'mist' | 'neutral';
+
+const BG_CONFIG: Record<BgPreset, { label: string; color: number; hex: string; fog: boolean }> = {
+  studio: { label: 'Studio Dark', color: 0x0f0f12, hex: '#0f0f12', fog: false },
+  mist: { label: 'Cold Mist', color: 0x0c141f, hex: '#0c141f', fog: true },
+  neutral: { label: 'Neutral Gray', color: 0x22232a, hex: '#22232a', fog: false },
+};
 
 interface ThreeViewerProps {
   filePath: string;
@@ -22,6 +31,10 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [autoRotate, setAutoRotate] = useState(false);
+  const [turntableSpeed, setTurntableSpeed] = useState<0.5 | 1 | 2>(1);
+  const [pointCloudMode, setPointCloudMode] = useState(false);
+  const [bgPreset, setBgPreset] = useState<BgPreset>('mist');
+  const [flashSnapshot, setFlashSnapshot] = useState(false);
   const [wireframe, setWireframe] = useState(false);
   const [showGrid, setShowGrid] = useState(true);
   const [stats, setStats] = useState<{ vertices: number; triangles: number; splats?: number } | null>(null);
@@ -164,17 +177,105 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
     });
   }, []);
 
-  // Sync turntable auto-rotation across both Standard Three.js and Gaussian Splatting
+  // Sync turntable auto-rotation and speed across standard Three.js and Gaussian Splatting
   useEffect(() => {
+    const speed = turntableSpeed * 1.5;
     if (controlsRef.current) {
       controlsRef.current.autoRotate = autoRotate;
-      controlsRef.current.autoRotateSpeed = 1.0;
+      controlsRef.current.autoRotateSpeed = speed;
     }
     if (splatViewerRef.current?.controls) {
       splatViewerRef.current.controls.autoRotate = autoRotate;
-      splatViewerRef.current.controls.autoRotateSpeed = 1.0;
+      splatViewerRef.current.controls.autoRotateSpeed = speed;
     }
-  }, [autoRotate]);
+  }, [autoRotate, turntableSpeed]);
+
+  // Cycle turntable speed between 0.5x, 1.0x, 2.0x
+  const cycleTurntableSpeed = useCallback(() => {
+    setTurntableSpeed(curr => {
+      if (curr === 0.5) return 1;
+      if (curr === 1) return 2;
+      return 0.5;
+    });
+  }, []);
+
+  // Cycle background presets: Cold Mist -> Studio Dark -> Neutral Gray
+  const cycleBgPreset = useCallback(() => {
+    setBgPreset(curr => {
+      if (curr === 'mist') return 'studio';
+      if (curr === 'studio') return 'neutral';
+      return 'mist';
+    });
+  }, []);
+
+  // Dynamically update background color and fog across renderers
+  useEffect(() => {
+    const conf = BG_CONFIG[bgPreset];
+    if (sceneRef.current) {
+      sceneRef.current.background = new THREE.Color(conf.color);
+      sceneRef.current.fog = conf.fog ? new THREE.FogExp2(conf.color, 0.022) : null;
+    }
+    if (splatViewerRef.current?.renderer) {
+      try {
+        splatViewerRef.current.renderer.setClearColor(new THREE.Color(conf.color), 1.0);
+      } catch {}
+    }
+    if (containerRef.current) {
+      containerRef.current.style.backgroundColor = conf.hex;
+    }
+  }, [bgPreset]);
+
+  // Toggle point cloud rendering mode for Gaussian Splats
+  const togglePointCloud = useCallback(() => {
+    setPointCloudMode(prev => {
+      const next = !prev;
+      if (splatViewerRef.current) {
+        try {
+          const mesh = splatViewerRef.current.getSplatMesh?.() || splatViewerRef.current.splatMesh;
+          if (mesh && typeof mesh.setPointCloudModeEnabled === 'function') {
+            mesh.setPointCloudModeEnabled(next);
+          }
+        } catch (err) {
+          console.error('Point cloud mode toggle error:', err);
+        }
+      }
+      return next;
+    });
+  }, []);
+
+  // Snapshot capture to PNG
+  const takeSnapshot = useCallback(() => {
+    setFlashSnapshot(true);
+    setTimeout(() => setFlashSnapshot(false), 250);
+
+    try {
+      let canvas: HTMLCanvasElement | null = null;
+      if (renderMode === 'splat') {
+        try {
+          if (typeof splatViewerRef.current?.render === 'function') {
+            splatViewerRef.current.render();
+          }
+        } catch {}
+        canvas = splatViewerRef.current?.renderer?.domElement || containerRef.current?.querySelector('canvas');
+      } else {
+        if (rendererRef.current && sceneRef.current && cameraRef.current) {
+          rendererRef.current.render(sceneRef.current, cameraRef.current);
+          canvas = rendererRef.current.domElement;
+        }
+      }
+
+      if (canvas) {
+        const dataUrl = canvas.toDataURL('image/png');
+        const a = document.createElement('a');
+        const cleanName = fileName.replace(/\.[^/.]+$/, '');
+        a.href = dataUrl;
+        a.download = `${cleanName}_snapshot.png`;
+        a.click();
+      }
+    } catch (err) {
+      console.error('Snapshot failed:', err);
+    }
+  }, [renderMode, fileName]);
 
   // Gaussian Splatting loader
   const initGaussianSplat = useCallback(async () => {
@@ -208,7 +309,7 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
         viewer.controls.maxPolarAngle = Math.PI;
         viewer.controls.minPolarAngle = 0;
         viewer.controls.autoRotate = autoRotate;
-        viewer.controls.autoRotateSpeed = 1.0;
+        viewer.controls.autoRotateSpeed = turntableSpeed * 1.5;
       }
 
       // Determine scene format
@@ -228,6 +329,13 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
       });
 
       viewer.start();
+      try {
+        const conf = BG_CONFIG[bgPreset];
+        viewer.renderer?.setClearColor(new THREE.Color(conf.color), 1.0);
+        if (pointCloudMode) {
+          viewer.getSplatMesh()?.setPointCloudModeEnabled(true);
+        }
+      } catch {}
       setLoading(false);
 
       // Extract splat count if available
@@ -261,7 +369,9 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
 
     // Scene & Camera
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x0f0f12);
+    const conf = BG_CONFIG[bgPreset];
+    scene.background = new THREE.Color(conf.color);
+    if (conf.fog) scene.fog = new THREE.FogExp2(conf.color, 0.022);
     sceneRef.current = scene;
 
     const camera = new THREE.PerspectiveCamera(45, width / height, 0.05, 1000);
@@ -269,8 +379,8 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
     camera.up.set(0, 1, 0);
     cameraRef.current = camera;
 
-    // WebGL Renderer
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    // WebGL Renderer with preserveDrawingBuffer enabled for high-fidelity snapshots
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(width, height);
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -287,7 +397,7 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
     controls.zoomSpeed = 1.2;
     controls.panSpeed = 0.8;
     controls.autoRotate = autoRotate;
-    controls.autoRotateSpeed = 1.0;
+    controls.autoRotateSpeed = turntableSpeed * 1.5;
     controlsRef.current = controls;
 
     // Lighting setup
@@ -492,6 +602,11 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
       {/* 3D Canvas Container */}
       <div ref={containerRef} className="w-full h-full flex-1 overflow-hidden" />
 
+      {/* Snapshot Flash Overlay */}
+      {flashSnapshot && (
+        <div className="absolute inset-0 bg-white/60 pointer-events-none z-50 transition-opacity duration-200" />
+      )}
+
       {/* Loading Overlay */}
       {loading && (
         <div className="absolute inset-0 bg-black/60 backdrop-blur-xs flex flex-col items-center justify-center gap-3 z-20">
@@ -582,23 +697,67 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
           <span>Rotate 90°</span>
         </button>
 
-        {/* Universal Turntable Auto-Rotation (supports both Gaussian Splats and 3D Meshes) */}
+        {/* Universal Turntable Auto-Rotation & Speed Switcher */}
+        <div className="flex items-center bg-zinc-800/60 rounded border border-zinc-700/40">
+          <button
+            onClick={() => setAutoRotate(r => !r)}
+            className={`flex items-center gap-1.5 px-2 py-1 rounded transition cursor-pointer ${
+              autoRotate
+                ? (renderMode === 'splat' ? 'bg-violet-600 text-white font-semibold' : 'bg-blue-600 text-white font-semibold')
+                : 'hover:bg-zinc-700 text-zinc-300 hover:text-white'
+            }`}
+            title="Toggle slow turntable rotation"
+          >
+            <Disc size={13} className={autoRotate ? 'animate-spin' : ''} style={{ animationDuration: `${6 / turntableSpeed}s` }} />
+            <span>Turntable</span>
+          </button>
+          {autoRotate && (
+            <button
+              onClick={cycleTurntableSpeed}
+              className="px-1.5 py-1 text-[11px] font-mono text-zinc-300 hover:text-white hover:bg-zinc-700 rounded-r border-l border-zinc-700/50 cursor-pointer"
+              title="Cycle turntable speed (0.5x, 1x, 2x)"
+            >
+              {turntableSpeed}x
+            </button>
+          )}
+        </div>
+
+        {/* Gaussian Splats: Point Cloud Mode Toggle */}
+        {renderMode === 'splat' && (
+          <button
+            onClick={togglePointCloud}
+            className={`flex items-center gap-1 px-2 py-1 rounded transition cursor-pointer ${
+              pointCloudMode ? 'bg-violet-600 text-white font-semibold' : 'hover:bg-zinc-700 text-zinc-300 hover:text-white'
+            }`}
+            title="Toggle Gaussian Splat Point Cloud mode (circular screen splats)"
+          >
+            <Layers size={13} />
+            <span>Point Cloud</span>
+          </button>
+        )}
+
+        {/* Stage Background Preset Toggle */}
         <button
-          onClick={() => setAutoRotate(r => !r)}
-          className={`flex items-center gap-1.5 px-2 py-1 rounded transition cursor-pointer ${
-            autoRotate
-              ? (renderMode === 'splat' ? 'bg-violet-600 text-white shadow-xs font-semibold' : 'bg-blue-600 text-white shadow-xs font-semibold')
-              : 'hover:bg-zinc-700 text-zinc-300 hover:text-white'
-          }`}
-          title="Toggle slow turntable rotation"
+          onClick={cycleBgPreset}
+          className="flex items-center gap-1 px-2 py-1 rounded hover:bg-zinc-700 text-zinc-300 hover:text-white transition cursor-pointer"
+          title={`Switch stage background preset (Current: ${BG_CONFIG[bgPreset].label})`}
         >
-          <Disc size={13} className={autoRotate ? 'animate-spin' : ''} style={{ animationDuration: '6s' }} />
-          <span>Turntable</span>
+          <Palette size={13} />
+          <span>{BG_CONFIG[bgPreset].label}</span>
+        </button>
+
+        {/* High-Resolution Snapshot Capture */}
+        <button
+          onClick={takeSnapshot}
+          className="flex items-center gap-1 px-2 py-1 rounded hover:bg-zinc-700 text-zinc-300 hover:text-white transition cursor-pointer"
+          title="Capture clean high-resolution snapshot as PNG"
+        >
+          <Camera size={13} className="text-emerald-400" />
+          <span>Snapshot</span>
         </button>
 
         {renderMode === 'mesh' && (
           <>
-
             <button
               onClick={toggleWireframe}
               className={`flex items-center gap-1 px-2 py-1 rounded transition cursor-pointer ${

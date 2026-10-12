@@ -55,6 +55,10 @@ const api = {
   getFolderSize: (dirPath: string): Promise<SizeResult> =>
     ipcRenderer.invoke('get-folder-size', dirPath),
 
+  // Find top largest files (Space Hogs)
+  findLargestFiles: (dirPath: string, limit = 50): Promise<Array<{ name: string; path: string; size: number; mtime: string; ext: string }>> =>
+    ipcRenderer.invoke('find-largest-files', { dirPath, limit }),
+
   // Native folder picker
   selectFolder: (): Promise<string | null> =>
     ipcRenderer.invoke('select-folder'),

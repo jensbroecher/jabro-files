@@ -386,6 +386,73 @@ ipcMain.handle('get-folder-size', async (_event, dirPath: string) => {
   }
 });
 
+// Recursively find top largest files (Space Hogs) in a directory tree
+async function findLargestFilesRecursive(
+  rootPath: string,
+  limit = 50,
+  maxFilesToScan = 50000
+): Promise<Array<{ name: string; path: string; size: number; mtime: string; ext: string }>> {
+  const largestFiles: Array<{ name: string; path: string; size: number; mtime: string; ext: string }> = [];
+  const dirQueue: string[] = [rootPath];
+  let scannedCount = 0;
+
+  while (dirQueue.length > 0 && scannedCount < maxFilesToScan) {
+    const current = dirQueue.shift();
+    if (!current) break;
+
+    let dirents;
+    try {
+      dirents = await fs.readdir(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const dirent of dirents) {
+      if (dirent.name.startsWith('._') || dirent.name === '$RECYCLE.BIN' || dirent.name === 'System Volume Information') {
+        continue;
+      }
+
+      const p = path.join(current, dirent.name);
+      if (dirent.isDirectory()) {
+        dirQueue.push(p);
+      } else if (dirent.isFile()) {
+        scannedCount++;
+        try {
+          const st = await fs.stat(p);
+          const ext = path.extname(dirent.name);
+          const entry = {
+            name: dirent.name,
+            path: p,
+            size: st.size,
+            mtime: st.mtime.toISOString(),
+            ext,
+          };
+
+          if (largestFiles.length < limit) {
+            largestFiles.push(entry);
+            largestFiles.sort((a, b) => b.size - a.size);
+          } else if (st.size > largestFiles[largestFiles.length - 1].size) {
+            largestFiles.pop();
+            largestFiles.push(entry);
+            largestFiles.sort((a, b) => b.size - a.size);
+          }
+        } catch {}
+      }
+    }
+  }
+
+  return largestFiles;
+}
+
+ipcMain.handle('find-largest-files', async (_event, { dirPath, limit }: { dirPath: string; limit?: number }) => {
+  try {
+    return await findLargestFilesRecursive(dirPath, limit || 50);
+  } catch (err) {
+    console.error('find-largest-files failed', dirPath, err);
+    return [];
+  }
+});
+
 // Helper functions for copy / move
 function normalizeTargetDirectory(target: string): string {
   let trimmed = (target || '').trim();
