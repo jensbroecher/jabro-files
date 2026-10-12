@@ -1,9 +1,10 @@
-import { app, BrowserWindow, dialog, ipcMain, shell, protocol, net, session } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, shell, protocol, net, session, nativeImage, screen } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import { Readable } from 'node:stream';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import { exec, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -56,7 +57,30 @@ function getSavedBounds(): any {
   try {
     if (fsSync.existsSync(getBoundsPath())) {
       const data = fsSync.readFileSync(getBoundsPath(), 'utf8');
-      return JSON.parse(data);
+      const parsed = JSON.parse(data);
+      if (parsed && typeof parsed.width === 'number' && typeof parsed.height === 'number') {
+        // Discard invalid/tiny dimensions
+        if (parsed.width < 400 || parsed.height < 300) return null;
+        // Discard minimized coordinates on Windows (e.g. -32000)
+        if (parsed.x !== undefined && (parsed.x < -10000 || parsed.y < -10000)) {
+          return null;
+        }
+        // Verify that the window bounds intersect at least one active display
+        try {
+          const displays = screen.getAllDisplays();
+          const isVisible = displays.some((d) => {
+            const db = d.bounds;
+            return (
+              parsed.x >= db.x - 200 &&
+              parsed.x < db.x + db.width &&
+              parsed.y >= db.y - 100 &&
+              parsed.y < db.y + db.height
+            );
+          });
+          if (!isVisible) return null;
+        } catch {}
+        return parsed;
+      }
     }
   } catch {}
   return null;
@@ -64,9 +88,13 @@ function getSavedBounds(): any {
 
 function saveBounds(win: BrowserWindow) {
   try {
-    const bounds = win.getBounds();
-    (bounds as any).isMaximized = win.isMaximized();
-    fsSync.writeFileSync(getBoundsPath(), JSON.stringify(bounds));
+    if (!win || win.isDestroyed() || win.isMinimized()) return;
+    const bounds = win.isMaximized() ? (win.getNormalBounds ? win.getNormalBounds() : win.getBounds()) : win.getBounds();
+    const data = {
+      ...bounds,
+      isMaximized: win.isMaximized(),
+    };
+    fsSync.writeFileSync(getBoundsPath(), JSON.stringify(data));
   } catch {}
 }
 
@@ -112,10 +140,41 @@ function createWindow() {
   // - `npm start` / `npx electron .` after build, or packaged app → loads the static built files
   const devServerUrl = process.env.VITE_DEV_SERVER_URL;
   if (devServerUrl) {
-    mainWindow.loadURL(devServerUrl);
+    const loadDev = () => {
+      mainWindow?.loadURL(devServerUrl).catch((err) => {
+        console.warn('[Main] Dev server connect failed, retrying in 350ms...', err);
+        setTimeout(() => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            loadDev();
+          }
+        }, 350);
+      });
+    };
+    loadDev();
   } else {
-    mainWindow.loadFile(getIndexHtmlPath());
+    mainWindow.loadFile(getIndexHtmlPath()).catch((err) => {
+      console.error('[Main] Failed to load index.html:', err);
+    });
   }
+
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    console.warn(`[Main] did-fail-load: ${errorDescription} (${errorCode}) for ${validatedURL}`);
+    if (devServerUrl && validatedURL && validatedURL.includes('localhost')) {
+      setTimeout(() => {
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          console.log('[Main] Dev server retry on did-fail-load...');
+          mainWindow.loadURL(devServerUrl).catch(() => {});
+        }
+      }, 500);
+    }
+  });
+
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[Main] Render process gone:', details);
+    if (details.reason !== 'clean-exit' && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.reload();
+    }
+  });
 
   mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
     console.log(`[Renderer LOG ${level}] ${message} (${sourceId}:${line})`);
@@ -144,9 +203,10 @@ app.whenReady().then(() => {
 
   // Protocol handler for streaming local assets, 3D models, Gaussian splats, and PDFs
   protocol.handle('jabro-media', async (request) => {
+    let targetPath = '';
     try {
       const url = new URL(request.url);
-      let targetPath = url.searchParams.get('path');
+      targetPath = url.searchParams.get('path') || '';
       if (!targetPath) {
         let pathname = decodeURIComponent(url.pathname);
         if (process.platform === 'win32' && pathname.startsWith('/') && /^[a-zA-Z]:/.test(pathname.slice(1))) {
@@ -155,16 +215,34 @@ app.whenReady().then(() => {
         targetPath = pathname;
       }
 
+      if (targetPath) {
+        if (targetPath.startsWith('\\\\?\\')) {
+          targetPath = targetPath.slice(4);
+        } else if (targetPath.startsWith('//?/')) {
+          targetPath = targetPath.slice(4);
+        }
+        targetPath = path.normalize(targetPath);
+      }
+
       const stat = await fs.stat(targetPath);
       const ext = path.extname(targetPath).toLowerCase();
       const headers = new Headers();
 
       let mimeType = '';
       if (ext === '.pdf') mimeType = 'application/pdf';
+      else if (ext === '.jpg' || ext === '.jpeg') mimeType = 'image/jpeg';
+      else if (ext === '.png') mimeType = 'image/png';
+      else if (ext === '.webp') mimeType = 'image/webp';
+      else if (ext === '.gif') mimeType = 'image/gif';
+      else if (ext === '.svg') mimeType = 'image/svg+xml';
+      else if (ext === '.bmp') mimeType = 'image/bmp';
+      else if (ext === '.ico') mimeType = 'image/x-icon';
+      else if (ext === '.tga') mimeType = 'image/x-tga';
+      else if (ext === '.dds') mimeType = 'image/vnd-ms.dds';
       else if (ext === '.glb') mimeType = 'model/gltf-binary';
       else if (ext === '.gltf') mimeType = 'model/gltf+json';
       else if (ext === '.obj') mimeType = 'text/plain';
-      else if (ext === '.stl' || ext === '.ply' || ext === '.splat' || ext === '.ksplat' || ext === '.spz') {
+      else if (ext === '.stl' || ext === '.ply' || ext === '.splat' || ext === '.ksplat' || ext === '.spz' || ext === '.fbx') {
         mimeType = 'application/octet-stream';
       }
 
@@ -204,8 +282,8 @@ app.whenReady().then(() => {
         headers,
       });
     } catch (err: any) {
-      console.error('jabro-media protocol error:', err);
-      return new Response('File not found', { status: 404 });
+      console.error('jabro-media protocol error for path:', targetPath, err);
+      return new Response('File not found: ' + (err?.message || 'Not found'), { status: 404 });
     }
   });
 
@@ -1239,66 +1317,46 @@ ipcMain.handle('get-drives', async (): Promise<Array<{ name: string; path: strin
   if (process.platform !== 'win32') {
     return [{ name: '/', path: '/' }];
   }
+  // 1. Primary: Query Windows logical disks with volume names, capacity, and available space using WMI/CIM
   try {
-    // Use PowerShell + .NET DriveInfo for reliable capacity/free space (works better than Win32_LogicalDisk in many cases, especially with symlinks, dynamic disks, etc.)
     const { stdout } = await execAsync(
-      'powershell -NoProfile -Command "[System.IO.DriveInfo]::GetDrives() | Where-Object { $_.IsReady } | Select-Object Name, VolumeLabel, TotalSize, AvailableFreeSpace | ConvertTo-Json -AsArray"'
+      'powershell -NoProfile -Command "@(Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID, VolumeName, Description, Size, FreeSpace) | ConvertTo-Json"'
     );
     const disks = JSON.parse(stdout || '[]');
-    return (Array.isArray(disks) ? disks : [disks])
-      .filter((d: any) => d.Name)
-      .map((d: any) => ({
-        name: d.Name.replace(/\\$/, ''),  // e.g. "C:" not "C:\\"
-        path: d.Name.endsWith('\\') ? d.Name : (d.Name + '\\'),
-        label: d.VolumeLabel || undefined,
-        size: d.TotalSize ? Number(d.TotalSize) : undefined,
-        freeSpace: d.AvailableFreeSpace ? Number(d.AvailableFreeSpace) : undefined,
-      }));
-  } catch (e) {
-    // Fallback: use wmic (built-in, reliable) to get real sizes even if DriveInfo PS fails
-    try {
-      const { stdout } = await execAsync('wmic logicaldisk get name,size,freespace /format:csv');
-      const lines = stdout.trim().split(/\r?\n/).filter(Boolean);
-      const drives = [];
-      for (let i = 1; i < lines.length; i++) {  // skip header
-        const parts = lines[i].split(',').map(s => s.trim());
-        // wmic csv for logicaldisk get name,size,freespace is: Node,FreeSpace,Name,Size
-        if (parts.length < 4) continue;
-        const freeStr = parts[1];
-        const name = parts[2];
-        const sizeStr = parts[3];
-        if (name && /^[A-Za-z]:/.test(name)) {
-          drives.push({
-            name: name.replace(/\\$/, ''),
-            path: name.endsWith('\\') ? name : name + '\\',
-            size: sizeStr && /^\d+$/.test(sizeStr) ? Number(sizeStr) : undefined,
-            freeSpace: freeStr && /^\d+$/.test(freeStr) ? Number(freeStr) : undefined,
-          });
+    const arr = Array.isArray(disks) ? disks : [disks];
+    const results = arr
+      .filter((d: any) => d?.DeviceID && /^[A-Za-z]:/i.test(d.DeviceID))
+      .map((d: any) => {
+        let label = (d.VolumeName && typeof d.VolumeName === 'string' && d.VolumeName.trim()) ? d.VolumeName.trim() : undefined;
+        if (!label) {
+          if (d.Description === 'Removable Disk') label = 'Removable Disk';
+          else if (d.Description === 'Local Fixed Disk') label = 'Local Disk';
+          else if (d.Description && typeof d.Description === 'string' && d.Description.trim()) label = d.Description.trim();
         }
-      }
-      if (drives.length) return drives;
-    } catch {}
-    // Last resort: common drives (with plausible varied sizes so UI always shows something if real queries fail)
-    const common = ['C:\\', 'D:\\', 'E:\\', 'F:\\', 'G:\\', 'H:\\'];
-    const existing: any[] = [];
-    const approx: Record<string, {s: number, f: number}> = {
-      C: {s: 1000000000000, f: 300000000000},
-      D: {s: 500000000000, f: 150000000000},
-      E: {s: 250000000000, f: 80000000000},
-      F: {s: 120000000000, f: 40000000000},
-      G: {s: 60000000000, f: 20000000000},
-      H: {s: 400000000000, f: 100000000000},
-    };
-    for (const p of common) {
-      try {
-        await fs.access(p);
-        const key = p[0];
-        const a = approx[key] || {s: 100000000000, f: 30000000000};
-        existing.push({ name: key + ':', path: p, size: a.s, freeSpace: a.f });
-      } catch {}
-    }
-    return existing.length ? existing : [{ name: 'C:', path: 'C:\\', size: 1000000000000, freeSpace: 300000000000 }];
+        return {
+          name: d.DeviceID.replace(/\\$/, ''),  // e.g. "C:"
+          path: d.DeviceID.endsWith('\\') ? d.DeviceID : (d.DeviceID + '\\'),
+          label,
+          size: d.Size != null && d.Size > 0 ? Number(d.Size) : undefined,
+          freeSpace: d.FreeSpace != null ? Number(d.FreeSpace) : undefined,
+        };
+      });
+    if (results.length > 0) return results;
+  } catch (e) {
+    console.error('get-drives CIM query failed, trying fallback', e);
   }
+
+  // 2. Fallback: check common drives directly with fs.access
+  const common = ['C:\\', 'D:\\', 'E:\\', 'F:\\', 'G:\\', 'H:\\'];
+  const existing: Array<{ name: string; path: string; label?: string; size?: number; freeSpace?: number }> = [];
+  for (const p of common) {
+    try {
+      await fs.access(p);
+      const key = p[0];
+      existing.push({ name: key + ':', path: p });
+    } catch {}
+  }
+  return existing.length ? existing : [{ name: 'C:', path: 'C:\\' }];
 });
 
 ipcMain.handle('get-default-quick-access', async () => {
@@ -1313,3 +1371,308 @@ ipcMain.handle('get-default-quick-access', async () => {
     return [];
   }
 });
+
+// -------------------------------------------------------------
+// Central Thumbnail Cache & File Preview System
+// -------------------------------------------------------------
+
+const THUMBNAIL_CACHE_DIR = path.join(app.getPath('userData'), 'thumbnails_cache');
+
+try {
+  fsSync.mkdirSync(THUMBNAIL_CACHE_DIR, { recursive: true });
+} catch (err) {
+  console.error('Failed to initialize thumbnail cache dir:', err);
+}
+
+const PREVIEWABLE_EXTENSIONS = new Set([
+  // Images
+  '.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif', '.ico', '.svg', '.tif', '.tiff', '.jfif', '.avif',
+  // Videos
+  '.mp4', '.mov', '.mkv', '.avi', '.wmv', '.webm', '.m4v', '.flv',
+  // Documents
+  '.pdf',
+  // 3D Models
+  '.glb', '.gltf', '.obj', '.stl', '.ply', '.fbx',
+  // Gaussian Splats
+  '.splat', '.ksplat', '.spz',
+]);
+
+function getThumbnailCacheKey(filePath: string, mtime: string, size?: number): string {
+  return crypto.createHash('sha256').update(`${filePath}:${mtime}:${size || 0}:256`).digest('hex');
+}
+
+function getCachedThumbnailUrl(cachedPath: string): string {
+  return `jabro-media://localhost?path=${encodeURIComponent(cachedPath)}`;
+}
+
+class ThumbnailWorkerQueue {
+  private queue: Array<() => Promise<void>> = [];
+  private activeCount = 0;
+  private readonly maxConcurrency = 6;
+  private inFlight = new Map<string, Promise<{ url?: string; hasPreview: boolean }>>();
+
+  enqueue(key: string, fn: () => Promise<{ url?: string; hasPreview: boolean }>): Promise<{ url?: string; hasPreview: boolean }> {
+    if (this.inFlight.has(key)) {
+      return this.inFlight.get(key)!;
+    }
+
+    const promise = new Promise<{ url?: string; hasPreview: boolean }>((resolve) => {
+      const task = async () => {
+        try {
+          const res = await fn();
+          resolve(res);
+        } catch (err) {
+          console.error('[ThumbnailQueue] task failed for key', key, err);
+          resolve({ hasPreview: false });
+        } finally {
+          this.activeCount--;
+          this.inFlight.delete(key);
+          this.dispatch();
+        }
+      };
+
+      this.queue.push(task);
+      this.dispatch();
+    });
+
+    this.inFlight.set(key, promise);
+    return promise;
+  }
+
+  private dispatch() {
+    while (this.activeCount < this.maxConcurrency && this.queue.length > 0) {
+      const nextTask = this.queue.shift();
+      if (nextTask) {
+        this.activeCount++;
+        nextTask();
+      }
+    }
+  }
+}
+
+const thumbnailQueue = new ThumbnailWorkerQueue();
+
+async function generateThumbnailFile(filePath: string, cachedPath: string, ext: string): Promise<boolean> {
+  const isDirectImage = ['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif', '.ico', '.jfif'].includes(ext);
+
+  try {
+    await fs.mkdir(path.dirname(cachedPath), { recursive: true });
+  } catch {}
+
+  // 1. Direct native image decoding (ultra-fast for common raster images)
+  if (isDirectImage) {
+    try {
+      const img = nativeImage.createFromPath(filePath);
+      if (!img.isEmpty()) {
+        const size = img.getSize();
+        if (size.width > 0 && size.height > 0) {
+          const maxDim = 256;
+          let width = size.width;
+          let height = size.height;
+          if (width > maxDim || height > maxDim) {
+            if (width >= height) {
+              height = Math.round((height * maxDim) / width);
+              width = maxDim;
+            } else {
+              width = Math.round((width * maxDim) / height);
+              height = maxDim;
+            }
+          }
+          const resized = img.resize({ width: Math.max(1, width), height: Math.max(1, height), quality: 'good' });
+          const jpegBuf = resized.toJPEG(82);
+          await fs.writeFile(cachedPath, jpegBuf);
+          return true;
+        }
+      }
+    } catch (e) {
+      // Fallback to shell thumbnail
+    }
+  }
+
+  // 2. Windows shell thumbnail provider (nativeImage.createThumbnailFromPath)
+  // Handles videos (.mp4, .mkv, .avi, etc.), PDFs, and images that createFromPath couldn't decode
+  try {
+    if (typeof nativeImage.createThumbnailFromPath === 'function') {
+      const thumb = await nativeImage.createThumbnailFromPath(filePath, { width: 256, height: 256 });
+      if (!thumb.isEmpty()) {
+        const thumbSize = thumb.getSize();
+        let processedThumb = thumb;
+        if (thumbSize.width > 0 && thumbSize.height > 0 && thumbSize.width !== thumbSize.height) {
+          const minDim = Math.min(thumbSize.width, thumbSize.height);
+          const cropX = Math.round((thumbSize.width - minDim) / 2);
+          const cropY = Math.round((thumbSize.height - minDim) / 2);
+          processedThumb = thumb.crop({ x: cropX, y: cropY, width: minDim, height: minDim });
+        }
+        const jpegBuf = processedThumb.toJPEG(82);
+        await fs.writeFile(cachedPath, jpegBuf);
+        return true;
+      }
+    }
+  } catch (e) {
+    // Shell thumbnail failed
+  }
+
+  return false;
+}
+
+ipcMain.handle('get-thumbnail', async (_e, { filePath, mtime, size }: { filePath: string; mtime: string; size?: number }): Promise<{ url?: string; hasPreview: boolean }> => {
+  if (!filePath) return { hasPreview: false };
+  const ext = path.extname(filePath).toLowerCase();
+  if (!PREVIEWABLE_EXTENSIONS.has(ext)) {
+    return { hasPreview: false };
+  }
+
+  const cacheKey = getThumbnailCacheKey(filePath, mtime, size);
+  const cachedPath = path.join(THUMBNAIL_CACHE_DIR, `${cacheKey}.jpg`);
+
+  // Fast disk check
+  if (fsSync.existsSync(cachedPath)) {
+    return { url: getCachedThumbnailUrl(cachedPath), hasPreview: true };
+  }
+
+  return thumbnailQueue.enqueue(cacheKey, async () => {
+    // Check again in case another worker just finished it
+    if (fsSync.existsSync(cachedPath)) {
+      return { url: getCachedThumbnailUrl(cachedPath), hasPreview: true };
+    }
+
+    const success = await generateThumbnailFile(filePath, cachedPath, ext);
+    if (success) {
+      return { url: getCachedThumbnailUrl(cachedPath), hasPreview: true };
+    }
+    return { hasPreview: false };
+  });
+});
+
+ipcMain.handle('get-thumbnails-batch', async (_e, items: Array<{ filePath: string; mtime: string; size?: number }>): Promise<Record<string, string>> => {
+  const result: Record<string, string> = {};
+  if (!Array.isArray(items)) return result;
+
+  for (const item of items) {
+    if (!item?.filePath) continue;
+    const ext = path.extname(item.filePath).toLowerCase();
+    if (!PREVIEWABLE_EXTENSIONS.has(ext)) continue;
+
+    const cacheKey = getThumbnailCacheKey(item.filePath, item.mtime, item.size);
+    const cachedPath = path.join(THUMBNAIL_CACHE_DIR, `${cacheKey}.jpg`);
+    if (fsSync.existsSync(cachedPath)) {
+      result[item.filePath] = getCachedThumbnailUrl(cachedPath);
+    }
+  }
+
+  return result;
+});
+
+// Fast snippet reader for text & code previews (reads up to first ~800 bytes)
+ipcMain.handle('read-file-snippet', async (_e, filePath: string, maxChars = 240): Promise<string> => {
+  try {
+    const handle = await fs.open(filePath, 'r');
+    const buffer = Buffer.alloc(1024);
+    const { bytesRead } = await handle.read(buffer, 0, 1024, 0);
+    await handle.close();
+    const str = buffer.toString('utf8', 0, bytesRead);
+    return str.slice(0, maxChars);
+  } catch {
+    return '';
+  }
+});
+
+// Thumbnail cache statistics
+ipcMain.handle('get-thumbnail-cache-stats', async (): Promise<{ count: number; sizeBytes: number; cachePath: string }> => {
+  try {
+    const files = await fs.readdir(THUMBNAIL_CACHE_DIR);
+    let totalSize = 0;
+    let count = 0;
+    for (const f of files) {
+      if (f.endsWith('.jpg') || f.endsWith('.webp')) {
+        count++;
+        try {
+          const st = await fs.stat(path.join(THUMBNAIL_CACHE_DIR, f));
+          totalSize += st.size;
+        } catch {}
+      }
+    }
+    return { count, sizeBytes: totalSize, cachePath: THUMBNAIL_CACHE_DIR };
+  } catch {
+    return { count: 0, sizeBytes: 0, cachePath: THUMBNAIL_CACHE_DIR };
+  }
+});
+
+// Clear thumbnail cache
+ipcMain.handle('clear-thumbnail-cache', async (): Promise<{ success: boolean; count: number; clearedBytes: number }> => {
+  try {
+    const files = await fs.readdir(THUMBNAIL_CACHE_DIR);
+    let clearedBytes = 0;
+    let count = 0;
+    for (const f of files) {
+      if (f.endsWith('.jpg') || f.endsWith('.webp')) {
+        const fp = path.join(THUMBNAIL_CACHE_DIR, f);
+        try {
+          const st = await fs.stat(fp);
+          clearedBytes += st.size;
+          await fs.unlink(fp);
+          count++;
+        } catch {}
+      }
+    }
+    return { success: true, count, clearedBytes };
+  } catch (err: any) {
+    console.error('Failed to clear thumbnail cache:', err);
+    return { success: false, count: 0, clearedBytes: 0 };
+  }
+});
+
+ipcMain.handle('open-thumbnail-cache-folder', async (): Promise<void> => {
+  try {
+    await shell.openPath(THUMBNAIL_CACHE_DIR);
+  } catch (err) {
+    console.error('Failed to open thumbnail cache folder:', err);
+  }
+});
+
+// Save a direct rendered snapshot (e.g. from 3D viewer or Gaussian Splat canvas) to the central thumbnail cache
+ipcMain.handle('save-thumbnail-cache', async (_e, { filePath, dataUrl, mtime, size }: { filePath: string; dataUrl: string; mtime?: string; size?: number }): Promise<boolean> => {
+  try {
+    if (!filePath || !dataUrl) return false;
+    let base64Data = dataUrl.replace(/^data:image\/\w+;base64,/, '');
+    const buf = Buffer.from(base64Data, 'base64');
+
+    let statMtime = mtime;
+    let statSize = size;
+    if (!statMtime || statSize == null) {
+      try {
+        const st = await fs.stat(filePath);
+        statMtime = st.mtime.toISOString();
+        statSize = st.size;
+      } catch {
+        statMtime = new Date().toISOString();
+        statSize = 0;
+      }
+    }
+
+    const cacheKey = getThumbnailCacheKey(filePath, statMtime, statSize);
+    const cachedPath = path.join(THUMBNAIL_CACHE_DIR, `${cacheKey}.jpg`);
+    await fs.mkdir(path.dirname(cachedPath), { recursive: true });
+
+    const img = nativeImage.createFromBuffer(buf);
+    if (img.isEmpty()) return false;
+
+    // Center-square crop to ensure 1:1 aspect ratio with zero distortion or squishing
+    const imgSize = img.getSize();
+    let squareImg = img;
+    if (imgSize.width > 0 && imgSize.height > 0 && imgSize.width !== imgSize.height) {
+      const minDim = Math.min(imgSize.width, imgSize.height);
+      const cropX = Math.round((imgSize.width - minDim) / 2);
+      const cropY = Math.round((imgSize.height - minDim) / 2);
+      squareImg = img.crop({ x: cropX, y: cropY, width: minDim, height: minDim });
+    }
+
+    const jpegBuf = squareImg.resize({ width: 256, height: 256, quality: 'best' }).toJPEG(85);
+    await fs.writeFile(cachedPath, jpegBuf);
+    return true;
+  } catch (err) {
+    console.error('save-thumbnail-cache failed:', err);
+    return false;
+  }
+});
+

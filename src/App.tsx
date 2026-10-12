@@ -4,9 +4,11 @@ import {
   HardDrive, Folder, File, Search, X, Calculator, ChevronDown,
   CheckCircle2, AlertTriangle, AlertCircle, Copy, Scissors, Clipboard, Loader2, Info,
   ShieldAlert, ShieldCheck, Box, Sparkles, FileText,
-  Plus, ChevronRight, ChevronLeft, LayoutGrid, List, Flame, Edit3, ExternalLink, Eye, PieChart
+  Plus, ChevronRight, ChevronLeft, LayoutGrid, List, Flame, Edit3, ExternalLink, Eye, PieChart,
+  Database, Trash2, PanelLeft, PanelLeftClose, PanelLeftOpen
 } from 'lucide-react';
 import { ThreeViewer } from './components/ThreeViewer';
+import { GridView } from './components/GridView';
 
 interface ToastInfo {
   id: string;
@@ -334,8 +336,26 @@ export default function App() {
   const [isEditingPath, setIsEditingPath] = useState(false);
   const [pathInputValue, setPathInputValue] = useState('H:\\AppDev\\size-browser');
 
-  // View Mode: Table vs Interactive Treemap
-  const [viewMode, setViewMode] = useState<'table' | 'treemap'>('table');
+  // View Mode: Table vs Grid Preview Tiles vs Interactive Treemap
+  const [viewMode, setViewMode] = useState<'table' | 'grid' | 'treemap'>(() => {
+    try {
+      return (localStorage.getItem('jabro-view-mode') as any) || 'grid';
+    } catch {
+      return 'grid';
+    }
+  });
+  const [rightViewMode, setRightViewMode] = useState<'table' | 'grid' | 'treemap'>('table');
+  const [gridTileSize, setGridTileSize] = useState<'small' | 'medium' | 'large'>(() => {
+    try {
+      return (localStorage.getItem('jabro-grid-size') as any) || 'medium';
+    } catch {
+      return 'medium';
+    }
+  });
+
+  const [cacheStats, setCacheStats] = useState<{ count: number; sizeBytes: number; cachePath: string } | null>(null);
+  const [showCachePopover, setShowCachePopover] = useState(false);
+  const cachePopoverRef = useRef<HTMLDivElement>(null);
 
   // Space Hogs (Find Largest Files)
   const [showLargestModal, setShowLargestModal] = useState(false);
@@ -345,6 +365,88 @@ export default function App() {
 
   // Customizable Quick Access (pinned folders). Persisted in localStorage.
   const [quickAccess, setQuickAccess] = useState<Array<{ label: string; path: string }>>([]);
+
+  // Sidebar state (resizable & collapsible with persistence)
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('jabro-sidebar-collapsed') === 'true';
+    } catch {
+      return false;
+    }
+  });
+
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    try {
+      const saved = localStorage.getItem('jabro-sidebar-width');
+      if (saved) {
+        const val = parseInt(saved, 10);
+        if (!isNaN(val) && val >= 140 && val <= 600) return val;
+      }
+    } catch {}
+    return 224; // default 224px (w-56)
+  });
+
+  const isResizingSidebarRef = useRef(false);
+
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('jabro-sidebar-collapsed', String(next));
+      } catch {}
+      return next;
+    });
+  }, []);
+
+  const handleSidebarResizeStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    isResizingSidebarRef.current = true;
+    const startX = e.clientX;
+    const startWidth = sidebarWidth;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const onMouseMove = (moveEvent: MouseEvent) => {
+      if (!isResizingSidebarRef.current) return;
+      const delta = moveEvent.clientX - startX;
+      const newWidth = startWidth + delta;
+      
+      // If dragged smaller than 90px, snap to collapsed!
+      if (newWidth < 90) {
+        setSidebarCollapsed(true);
+        try { localStorage.setItem('jabro-sidebar-collapsed', 'true'); } catch {}
+      } else {
+        const clamped = Math.max(140, Math.min(550, newWidth));
+        setSidebarWidth(clamped);
+        setSidebarCollapsed(false);
+        try { 
+          localStorage.setItem('jabro-sidebar-width', clamped.toString()); 
+          localStorage.setItem('jabro-sidebar-collapsed', 'false'); 
+        } catch {}
+      }
+    };
+
+    const onMouseUp = () => {
+      isResizingSidebarRef.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      window.removeEventListener('mousemove', onMouseMove);
+      window.removeEventListener('mouseup', onMouseUp);
+    };
+
+    window.addEventListener('mousemove', onMouseMove);
+    window.addEventListener('mouseup', onMouseUp);
+  }, [sidebarWidth]);
+
+  const handleResetSidebarWidth = useCallback(() => {
+    setSidebarWidth(224);
+    setSidebarCollapsed(false);
+    try {
+      localStorage.setItem('jabro-sidebar-width', '224');
+      localStorage.setItem('jabro-sidebar-collapsed', 'false');
+    } catch {}
+  }, []);
+
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [operationStatus, setOperationStatus] = useState('');
   const [viewer, setViewer] = useState<null | { type: 'image' | 'audio' | 'video' | 'text' | 'pdf' | '3d' | 'gaussian-splat'; path: string; name: string }>(null);
@@ -391,6 +493,55 @@ export default function App() {
   const dismissToast = useCallback((id: string) => {
     setToasts(prev => prev.filter(t => t.id !== id));
   }, []);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('jabro-view-mode', viewMode);
+    } catch {}
+  }, [viewMode]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('jabro-grid-size', gridTileSize);
+    } catch {}
+  }, [gridTileSize]);
+
+  const refreshCacheStats = useCallback(async () => {
+    if (api?.getThumbnailCacheStats) {
+      try {
+        const stats = await api.getThumbnailCacheStats();
+        setCacheStats(stats);
+      } catch {}
+    }
+  }, []);
+
+  const handleClearCache = useCallback(async () => {
+    if (api?.clearThumbnailCache) {
+      try {
+        const res = await api.clearThumbnailCache();
+        if (res?.success) {
+          showToast({
+            type: 'success',
+            title: 'Preview Cache Cleared',
+            message: `Deleted ${res.count} cached preview tiles (${formatSize(res.clearedBytes)} freed).`,
+          });
+          refreshCacheStats();
+        }
+      } catch (err: any) {
+        showToast({ type: 'error', title: 'Clear Cache Failed', message: err?.message || String(err) });
+      }
+    }
+  }, [showToast, refreshCacheStats]);
+
+  const handleOpenCacheFolder = useCallback(async () => {
+    if (api?.openThumbnailCacheFolder) {
+      api.openThumbnailCacheFolder();
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshCacheStats();
+  }, [refreshCacheStats]);
 
   // Guards to prevent duplicate/reload loops for the same path (e.g. special folders like Downloads)
   const leftLoadingRef = useRef<string | null>(null);
@@ -553,20 +704,26 @@ export default function App() {
     loadDirectory(currentPath);
     loadRightDirectory(rightCurrentPath);
 
-    api.getDrives().then((d: DriveInfo[]) => setDrives(d)).catch(() => {
-      // demo fallback with sizes
+    if (api?.getDrives) {
+      api.getDrives().then((d: DriveInfo[]) => setDrives(d)).catch(() => {
+        setDrives([
+          { name: 'C:', path: 'C:\\', size: 1000000000000, freeSpace: 300000000000 },
+          { name: 'D:', path: 'D:\\', size: 500000000000, freeSpace: 150000000000 },
+        ]);
+      });
+    } else {
       setDrives([
         { name: 'C:', path: 'C:\\', size: 1000000000000, freeSpace: 300000000000 },
         { name: 'D:', path: 'D:\\', size: 500000000000, freeSpace: 150000000000 },
       ]);
-    });
+    }
   }, []);
 
   // Load customizable Quick Access (defaults from main process using proper app.getPath for symlinks/custom locations)
   useEffect(() => {
     const loadQuickAccess = async () => {
       try {
-        const defaults = await api.getDefaultQuickAccess();
+        const defaults = api?.getDefaultQuickAccess ? await api.getDefaultQuickAccess() : [];
         const saved = localStorage.getItem('quickAccess');
         if (saved) {
           const parsed: Array<{label: string; path: string}> = JSON.parse(saved);
@@ -1506,6 +1663,11 @@ export default function App() {
         e.preventDefault();
         pasteFromClipboard();
       }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+        if (isInput) return;
+        e.preventDefault();
+        toggleSidebar();
+      }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
@@ -1513,7 +1675,7 @@ export default function App() {
     activeGoUp, activeRefresh, activeCalculateAllVisibleSizes, selected, entries, 
     copyToClipboard, pasteFromClipboard, activePaneIsRight, rightSelected, rightEntries, 
     navigateRight, viewer, activePane, rightVisibleEntries, visibleEntries, navigateViewer, 
-    addNewTab, openEntry
+    addNewTab, openEntry, toggleSidebar
   ]);
 
   const toggleSort = (key: 'name' | 'size' | 'mtime') => {
@@ -1672,6 +1834,9 @@ export default function App() {
       if (driveCtx && driveMenuRef.current && !driveMenuRef.current.contains(event.target as Node)) {
         closeDriveCtx();
       }
+      if (showCachePopover && cachePopoverRef.current && !cachePopoverRef.current.contains(event.target as Node)) {
+        setShowCachePopover(false);
+      }
     };
 
     // Use mousedown so it closes before click handlers on other elements, and doesn't interfere with menu item clicks
@@ -1680,7 +1845,7 @@ export default function App() {
     return () => {
       document.removeEventListener('mousedown', handleOutsideClick);
     };
-  }, [ctx, driveCtx]);
+  }, [ctx, driveCtx, showCachePopover]);
 
   const selectedEntry = entries.find(e => e.path === selected);
 
@@ -1725,6 +1890,16 @@ export default function App() {
         style={{ WebkitAppRegion: 'drag', height: '40px' } as any}
       >
         <div className="px-1.5 text-[10px] tracking-[1px] text-zinc-500 font-semibold select-none">JABROFILES</div>
+
+        {/* Sidebar toggle button */}
+        <button 
+          onClick={toggleSidebar} 
+          className={`nav-button ${sidebarCollapsed ? 'text-zinc-500 hover:text-zinc-200' : 'text-blue-400 hover:text-blue-300'}`} 
+          title={sidebarCollapsed ? "Expand sidebar (Ctrl+B)" : "Collapse sidebar (Ctrl+B)"} 
+          style={{ WebkitAppRegion: 'no-drag' } as any}
+        >
+          {sidebarCollapsed ? <PanelLeft size={15} /> : <PanelLeftClose size={15} />}
+        </button>
 
         {/* All buttons clustered on the left, away from the system window controls (min/max/close) */}
         <button onClick={activeGoBack} disabled={activeHistoryIndex === 0} className="nav-button" title="Back (Backspace in list)" style={{ WebkitAppRegion: 'no-drag' } as any}>
@@ -1843,20 +2018,29 @@ export default function App() {
         ) : (
           <div className="flex items-center flex-1 min-w-0 bg-zinc-900/60 border border-zinc-800/80 rounded px-2 py-0.5">
             <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5">
-              {parseBreadcrumbs(activeCurrentPath).map((b, idx, arr) => (
-                <React.Fragment key={b.fullPath}>
-                  <button
-                    onClick={() => activeNavigate(b.fullPath)}
-                    className="px-1.5 py-0.5 rounded text-zinc-300 hover:text-white hover:bg-zinc-800 transition text-[12px] font-medium flex items-center cursor-pointer whitespace-nowrap"
-                    title={b.fullPath}
-                  >
-                    {b.name}
-                  </button>
-                  {idx < arr.length - 1 && (
-                    <ChevronRight size={12} className="text-zinc-600 flex-shrink-0" />
-                  )}
-                </React.Fragment>
-              ))}
+              {parseBreadcrumbs(activeCurrentPath).map((b, idx, arr) => {
+                const isDrive = /^[a-zA-Z]:$/i.test(b.name);
+                const driveMatch = isDrive ? drives.find(d => d.name.toUpperCase() === b.name.toUpperCase()) : null;
+                const driveTitle = driveMatch?.label
+                  ? `${driveMatch.label} (${b.name}) • ${driveMatch.path}${driveMatch.freeSpace != null && driveMatch.size != null ? ` (${formatSize(driveMatch.freeSpace)} free of ${formatSize(driveMatch.size)})` : ''}`
+                  : (driveMatch?.size != null && driveMatch?.freeSpace != null ? `${b.name} (${formatSize(driveMatch.freeSpace)} free of ${formatSize(driveMatch.size)})` : b.fullPath);
+
+                return (
+                  <React.Fragment key={b.fullPath}>
+                    <button
+                      onClick={() => activeNavigate(b.fullPath)}
+                      className="px-1.5 py-0.5 rounded text-zinc-300 hover:text-white hover:bg-zinc-800 transition text-[12px] font-medium flex items-center cursor-pointer whitespace-nowrap"
+                      title={isDrive ? driveTitle : b.fullPath}
+                    >
+                      {isDrive && <HardDrive size={12} className="mr-1 text-emerald-400 flex-shrink-0" />}
+                      {b.name}
+                    </button>
+                    {idx < arr.length - 1 && (
+                      <ChevronRight size={12} className="text-zinc-600 flex-shrink-0" />
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </div>
             {/* Click empty space to edit as text */}
             <div
@@ -1888,63 +2072,112 @@ export default function App() {
         )}
       </div>
 
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden relative">
+        {/* Collapsed Sidebar Edge Expand Button */}
+        {sidebarCollapsed && (
+          <button
+            onClick={toggleSidebar}
+            className="w-5.5 flex items-center justify-center bg-[#111113] hover:bg-[#18181b] border-r border-zinc-800 text-zinc-500 hover:text-blue-400 transition cursor-pointer select-none group flex-shrink-0"
+            title="Expand sidebar (Ctrl+B)"
+          >
+            <PanelLeftOpen size={14} className="group-hover:scale-110 transition-transform" />
+          </button>
+        )}
+
         {/* Sidebar */}
-        <div className="w-56 bg-[#111113] border-r border-zinc-800 overflow-auto flex flex-col text-sm">
-          <div className="px-3 pt-3 pb-1 text-[10px] font-semibold tracking-wider text-zinc-500 flex items-center justify-between">
-            QUICK ACCESS
-            <button
-              onClick={addFolderToQuickAccess}
-              className="text-blue-400 hover:text-blue-300 text-lg leading-none px-1"
-              title="Pin a folder to Quick Access"
+        {!sidebarCollapsed && (
+          <>
+            <div 
+              style={{ width: `${sidebarWidth}px`, minWidth: `${sidebarWidth}px`, maxWidth: `${sidebarWidth}px` }}
+              className="bg-[#111113] overflow-y-auto overflow-x-hidden flex flex-col text-sm select-none flex-shrink-0"
             >
-              +
-            </button>
-          </div>
-          {quickAccess.map(item => (
-            <div
-              key={item.path}
-              onClick={() => activeNavigate(item.path)}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                if (window.confirm(`Remove "${item.label}" from Quick Access?`)) {
-                  removeFromQuickAccess(item.path);
-                }
-              }}
-              onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
-              onDrop={(e) => handleDropToPath(e, item.path)}
-              className={`mx-1.5 px-2.5 py-1 rounded flex items-center gap-2 cursor-pointer ${(activePaneIsRight ? rightCurrentPath : currentPath) === item.path ? 'bg-zinc-800' : 'hover:bg-zinc-900'}`}
-              title={item.path}
-            >
-              <Folder size={15} className="text-blue-400" /> {item.label}
-            </div>
-          ))}
+              <div className="px-3 pt-3 pb-1 text-[10px] font-semibold tracking-wider text-zinc-500 flex items-center justify-between">
+                <span>QUICK ACCESS</span>
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={addFolderToQuickAccess}
+                    className="text-blue-400 hover:text-blue-300 text-lg leading-none px-1"
+                    title="Pin a folder to Quick Access"
+                  >
+                    +
+                  </button>
+                  <button
+                    onClick={toggleSidebar}
+                    className="text-zinc-500 hover:text-zinc-300 p-0.5 rounded transition cursor-pointer"
+                    title="Collapse sidebar (Ctrl+B)"
+                  >
+                    <PanelLeftClose size={13} />
+                  </button>
+                </div>
+              </div>
+              {quickAccess.map(item => (
+                <div
+                  key={item.path}
+                  onClick={() => activeNavigate(item.path)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    if (window.confirm(`Remove "${item.label}" from Quick Access?`)) {
+                      removeFromQuickAccess(item.path);
+                    }
+                  }}
+                  onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
+                  onDrop={(e) => handleDropToPath(e, item.path)}
+                  className={`mx-1.5 px-2.5 py-1 rounded flex items-center gap-2 cursor-pointer ${(activePaneIsRight ? rightCurrentPath : currentPath) === item.path ? 'bg-zinc-800' : 'hover:bg-zinc-900'}`}
+                  title={item.path}
+                >
+                  <Folder size={15} className="text-blue-400 flex-shrink-0" />
+                  <span className="truncate">{item.label}</span>
+                </div>
+              ))}
 
-          <div className="px-3 pt-4 pb-1 text-[10px] font-semibold tracking-wider text-zinc-500">THIS PC</div>
-          {drives.length > 0 ? drives.map(d => (
-            <div
-              key={d.path}
-              onClick={() => activeNavigate(d.path)}
-              onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); showDriveCtx(e, d); }}
-              onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
-              onDrop={(e) => handleDropToPath(e, d.path)}
-              className={`mx-1.5 px-2.5 py-1 rounded flex items-center gap-2 cursor-pointer ${(activePaneIsRight ? rightCurrentPath : currentPath).startsWith(d.path) ? 'bg-zinc-800' : 'hover:bg-zinc-900'}`}
-              title={d.size != null && d.freeSpace != null ? `${formatSize(d.freeSpace)} free of ${formatSize(d.size)}` : undefined}
-            >
-              <HardDrive size={15} className="text-emerald-400" />
-              <span className="flex-1 min-w-0 truncate">
-                {d.name} {d.label ? `(${d.label})` : ''}
-              </span>
-              {d.size != null && d.freeSpace != null && (
-                <span className="text-[10px] text-zinc-500 flex-shrink-0 ml-1 whitespace-nowrap">({formatSize(d.freeSpace)} free of {formatSize(d.size)})</span>
+              <div className="px-3 pt-4 pb-1 text-[10px] font-semibold tracking-wider text-zinc-500">THIS PC</div>
+              {drives.length > 0 ? drives.map(d => {
+                const driveHoverLabel = d.label ? `${d.label} (${d.name})` : d.name;
+                const driveTooltip = d.size != null && d.freeSpace != null 
+                  ? `${driveHoverLabel} • ${d.path} • ${formatSize(d.freeSpace)} free of ${formatSize(d.size)}`
+                  : `${driveHoverLabel} • ${d.path}`;
+
+                return (
+                  <div
+                    key={d.path}
+                    onClick={() => activeNavigate(d.path)}
+                    onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); showDriveCtx(e, d); }}
+                    onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
+                    onDrop={(e) => handleDropToPath(e, d.path)}
+                    className={`mx-1.5 px-2.5 py-1 rounded flex items-center gap-2 cursor-pointer ${(activePaneIsRight ? rightCurrentPath : currentPath).startsWith(d.path) ? 'bg-zinc-800' : 'hover:bg-zinc-900'}`}
+                    title={driveTooltip}
+                  >
+                    <HardDrive size={15} className="text-emerald-400 flex-shrink-0" />
+                    <span 
+                      className="flex-1 min-w-0 truncate"
+                      title={driveHoverLabel}
+                    >
+                      <span className="font-semibold text-zinc-200" title={driveHoverLabel}>{d.name}</span>
+                      {d.label && <span className="ml-1 text-zinc-400" title={driveHoverLabel}>({d.label})</span>}
+                    </span>
+                    {d.size != null && d.freeSpace != null && (
+                      <span className="text-[10px] text-zinc-500 flex-shrink-0 ml-1 whitespace-nowrap" title={driveTooltip}>
+                        ({formatSize(d.freeSpace)} free of {formatSize(d.size)})
+                      </span>
+                    )}
+                  </div>
+                );
+              }) : (
+                <div className="mx-1.5 px-2.5 py-1 text-zinc-500 text-xs">No drives detected</div>
               )}
-            </div>
-          )) : (
-            <div className="mx-1.5 px-2.5 py-1 text-zinc-500 text-xs">No drives detected</div>
-          )}
 
-          <div className="flex-1" />
-        </div>
+              <div className="flex-1" />
+            </div>
+
+            {/* Sidebar Resize Handle */}
+            <div
+              onMouseDown={handleSidebarResizeStart}
+              onDoubleClick={handleResetSidebarWidth}
+              className="w-1 hover:w-1.5 active:w-1.5 bg-zinc-800/80 hover:bg-blue-500 active:bg-blue-500 transition-colors cursor-col-resize flex-shrink-0 select-none z-10"
+              title="Drag to resize sidebar, double-click to reset width (224px)"
+            />
+          </>
+        )}
 
         {/* Main area */}
         <div className="flex-1 flex flex-col min-w-0">
@@ -1998,29 +2231,211 @@ export default function App() {
             </div>
 
             <div className="flex-1" />
+
+            {/* Space Hogs (Find Largest Files) */}
+            <button
+              onClick={openLargestFinder}
+              className="text-[11px] px-2 py-1 rounded flex items-center gap-1.5 transition text-zinc-400 hover:text-amber-400 hover:bg-zinc-800"
+              title="Space Hogs — find top 50 largest files in this directory tree"
+            >
+              <Flame size={13} className="text-amber-400" />
+              <span className="hidden md:inline">Space Hogs</span>
+            </button>
+
+            {/* Central Preview Cache Info & Management */}
+            <div className="relative">
+              <button
+                onClick={() => {
+                  setShowCachePopover(!showCachePopover);
+                  refreshCacheStats();
+                }}
+                className={`text-[11px] px-2 py-1 rounded flex items-center gap-1.5 transition ${
+                  showCachePopover ? 'bg-zinc-800 text-blue-400' : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
+                }`}
+                title="Central File Preview Cache"
+              >
+                <Database size={13} />
+                <span className="hidden sm:inline">Cache</span>
+                {cacheStats && cacheStats.count > 0 && (
+                  <span className="text-[10px] px-1 rounded-full bg-blue-500/20 text-blue-300 font-mono">
+                    {cacheStats.count}
+                  </span>
+                )}
+              </button>
+
+              {showCachePopover && (
+                <div
+                  ref={cachePopoverRef}
+                  className="absolute right-0 top-full mt-1.5 z-50 w-72 bg-[#18181b] border border-zinc-700/80 rounded-xl shadow-2xl p-3 text-xs flex flex-col gap-2.5 backdrop-blur-md"
+                >
+                  <div className="flex items-center justify-between pb-1.5 border-b border-zinc-800">
+                    <span className="font-semibold text-zinc-200 flex items-center gap-1.5">
+                      <Database size={14} className="text-blue-400" /> Central Preview Cache
+                    </span>
+                    <button
+                      onClick={() => setShowCachePopover(false)}
+                      className="text-zinc-400 hover:text-white"
+                    >
+                      <X size={13} />
+                    </button>
+                  </div>
+
+                  <div className="space-y-1.5 text-zinc-300 text-[11px]">
+                    <div className="flex justify-between">
+                      <span className="text-zinc-400">Cached Previews:</span>
+                      <span className="font-medium text-zinc-200">{cacheStats?.count ?? 0} files</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-zinc-400">Disk Used:</span>
+                      <span className="font-medium text-zinc-200">{formatSize(cacheStats?.sizeBytes ?? 0)}</span>
+                    </div>
+                    <div className="text-zinc-400 pt-0.5 truncate" title={cacheStats?.cachePath}>
+                      Folder: <span className="text-zinc-300 font-mono text-[10px]">{cacheStats?.cachePath || 'Central AppData'}</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-1 border-t border-zinc-800">
+                    <button
+                      onClick={handleOpenCacheFolder}
+                      className="flex-1 py-1.5 px-2 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 flex items-center justify-center gap-1.5 transition text-[11px]"
+                      title="Reveal central thumbnail cache folder in Windows Explorer"
+                    >
+                      <ExternalLink size={12} /> Open Folder
+                    </button>
+                    <button
+                      onClick={handleClearCache}
+                      className="py-1.5 px-2 rounded bg-rose-950/40 hover:bg-rose-900/60 text-rose-300 border border-rose-800/40 flex items-center justify-center gap-1.5 transition text-[11px]"
+                      title="Delete all cached thumbnails to reclaim disk space"
+                    >
+                      <Trash2 size={12} /> Clear Cache
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Tile Size Adjuster (active in grid view) */}
+            {(activePaneIsRight ? rightViewMode : viewMode) === 'grid' && (
+              <div className="flex items-center bg-zinc-900/90 border border-zinc-800 rounded p-0.5 text-xs text-zinc-400">
+                <button
+                  onClick={() => setGridTileSize('small')}
+                  className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition ${
+                    gridTileSize === 'small' ? 'bg-zinc-700 text-white shadow-xs' : 'hover:text-zinc-200'
+                  }`}
+                  title="Small preview tiles (130px)"
+                >
+                  S
+                </button>
+                <button
+                  onClick={() => setGridTileSize('medium')}
+                  className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition ${
+                    gridTileSize === 'medium' ? 'bg-zinc-700 text-white shadow-xs' : 'hover:text-zinc-200'
+                  }`}
+                  title="Medium preview tiles (170px)"
+                >
+                  M
+                </button>
+                <button
+                  onClick={() => setGridTileSize('large')}
+                  className={`px-1.5 py-0.5 rounded text-[10px] font-medium transition ${
+                    gridTileSize === 'large' ? 'bg-zinc-700 text-white shadow-xs' : 'hover:text-zinc-200'
+                  }`}
+                  title="Large preview tiles (230px)"
+                >
+                  L
+                </button>
+              </div>
+            )}
+
+            {/* View Mode Toggle */}
+            <div className="flex items-center bg-zinc-900/90 border border-zinc-800 rounded p-0.5 text-zinc-400">
+              <button
+                onClick={() => {
+                  if (activePaneIsRight) setRightViewMode('table'); else setViewMode('table');
+                }}
+                className={`p-1 rounded transition ${
+                  (activePaneIsRight ? rightViewMode : viewMode) === 'table' ? 'bg-zinc-700 text-white shadow-xs' : 'hover:text-zinc-200'
+                }`}
+                title="List / Table View"
+              >
+                <List size={14} />
+              </button>
+              <button
+                onClick={() => {
+                  if (activePaneIsRight) setRightViewMode('grid'); else setViewMode('grid');
+                }}
+                className={`p-1 rounded transition ${
+                  (activePaneIsRight ? rightViewMode : viewMode) === 'grid' ? 'bg-zinc-700 text-white shadow-xs' : 'hover:text-zinc-200'
+                }`}
+                title="Grid View with File Preview Tiles"
+              >
+                <LayoutGrid size={14} />
+              </button>
+              <button
+                onClick={() => {
+                  if (activePaneIsRight) setRightViewMode('treemap'); else setViewMode('treemap');
+                }}
+                className={`p-1 rounded transition ${
+                  (activePaneIsRight ? rightViewMode : viewMode) === 'treemap' ? 'bg-zinc-700 text-white shadow-xs' : 'hover:text-zinc-200'
+                }`}
+                title="Interactive Treemap View"
+              >
+                <PieChart size={14} />
+              </button>
+            </div>
           </div>
 
           {/* The list area - supports dual pane ("second page") */}
           <div className={`flex-1 overflow-hidden list-area ${dualPane ? 'flex flex-row' : 'flex flex-col'}`}>
             {/* Left pane */}
-            <div className={`overflow-auto ${dualPane ? 'w-1/2 border-r border-zinc-800' : 'file-list flex-1'} ${dualPane && activePane === 'left' ? 'ring-1 ring-inset ring-blue-500/30' : ''}`}>
-              <div
-                className="file-list h-full"
-                onClick={activateLeft}
-                onContextMenu={showLeftPaneCtx}
-                onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
-                onDrop={(e) => handlePaneDrop(e, false)}
-              >
-                {isLoading ? (
-                  <div className="h-full flex items-center justify-center text-zinc-500 pt-4">
-                    <RefreshCw className="spinner mr-2" size={18} /> Loading…
-                  </div>
-                ) : visibleEntries.length === 0 ? (
-                  <div className="h-full flex flex-col items-center justify-center text-zinc-500 gap-2 pt-4">
-                    <Folder size={40} />
-                    <div>Empty folder{filter ? ' (no matches)' : ''}</div>
-                  </div>
-                ) : (
+            <div className={`overflow-hidden flex flex-col ${dualPane ? 'w-1/2 border-r border-zinc-800' : 'flex-1'} ${dualPane && activePane === 'left' ? 'ring-1 ring-inset ring-blue-500/30' : ''}`}>
+              {isLoading ? (
+                <div className="h-full flex items-center justify-center text-zinc-500 pt-4">
+                  <RefreshCw className="spinner mr-2" size={18} /> Loading…
+                </div>
+              ) : visibleEntries.length === 0 ? (
+                <div className="h-full flex flex-col items-center justify-center text-zinc-500 gap-2 pt-4">
+                  <Folder size={40} />
+                  <div>Empty folder{filter ? ' (no matches)' : ''}</div>
+                </div>
+              ) : viewMode === 'grid' ? (
+                <GridView
+                  entries={visibleEntries}
+                  selectedPath={selected}
+                  sizeCache={sizeCache}
+                  clipboard={clipboard}
+                  highlightedPath={highlightedPath}
+                  dragOverFolderPath={dragOverFolderPath}
+                  tileSize={gridTileSize}
+                  onSelect={(p) => { setSelected(p); setActivePane('left'); }}
+                  onOpen={(entry) => openEntry(entry)}
+                  onContextMenu={(e, entry) => { setActivePane('left'); setSelected(entry.path); showCtx(e, entry); }}
+                  onPaneContextMenu={showLeftPaneCtx}
+                  onCalculateFolderSize={calculateFolderSize}
+                  onDropToFolder={(e, targetPath) => { handleDropToPath(e, targetPath); setActivePane('left'); }}
+                  onPaneDrop={(e) => handlePaneDrop(e, false)}
+                  onQuickLook={(entry) => openEntry(entry)}
+                  formatSize={formatSize}
+                  formatDate={formatDate}
+                />
+              ) : viewMode === 'treemap' ? (
+                <TreemapView
+                  entries={visibleEntries}
+                  sizeCache={sizeCache}
+                  onNavigate={(p) => navigateTo(p)}
+                  onOpen={(e) => openEntry(e)}
+                  onSelect={(p) => { setSelected(p); setActivePane('left'); }}
+                  selectedPath={selected}
+                  onCalculateAll={calculateAllVisibleSizes}
+                />
+              ) : (
+                <div
+                  className="file-list h-full overflow-auto"
+                  onClick={activateLeft}
+                  onContextMenu={showLeftPaneCtx}
+                  onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
+                  onDrop={(e) => handlePaneDrop(e, false)}
+                >
                   <table className="w-full">
                     <thead>
                       <tr>
@@ -2096,30 +2511,60 @@ export default function App() {
                       })}
                     </tbody>
                   </table>
-                )}
-              </div>
+                </div>
+              )}
             </div>
 
             {/* Right pane (the "second page") - no extra header/buttons, uses shared top bar + filter. Aligned with left. */}
             {dualPane && (
               <div className={`w-1/2 flex flex-col overflow-hidden ${activePane === 'right' ? 'ring-1 ring-inset ring-blue-500/30' : ''}`}>
-                <div 
-                  className="file-list flex-1 overflow-auto"
-                  onClick={activateRight}
-                  onContextMenu={showRightPaneCtx}
-                  onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
-                  onDrop={(e) => handlePaneDrop(e, true)}
-                >
-                  {isRightLoading ? (
-                    <div className="h-full flex items-center justify-center text-zinc-500 pt-4">
-                      <RefreshCw className="spinner mr-2" size={18} /> Loading…
-                    </div>
-                  ) : rightVisibleEntries.length === 0 ? (
-                    <div className="h-full flex flex-col items-center justify-center text-zinc-500 gap-2 pt-4">
-                      <Folder size={40} />
-                      <div>Empty</div>
-                    </div>
-                  ) : (
+                {isRightLoading ? (
+                  <div className="h-full flex items-center justify-center text-zinc-500 pt-4">
+                    <RefreshCw className="spinner mr-2" size={18} /> Loading…
+                  </div>
+                ) : rightVisibleEntries.length === 0 ? (
+                  <div className="h-full flex flex-col items-center justify-center text-zinc-500 gap-2 pt-4">
+                    <Folder size={40} />
+                    <div>Empty</div>
+                  </div>
+                ) : rightViewMode === 'grid' ? (
+                  <GridView
+                    entries={rightVisibleEntries}
+                    selectedPath={rightSelected}
+                    sizeCache={sizeCache}
+                    clipboard={clipboard}
+                    highlightedPath={highlightedPath}
+                    dragOverFolderPath={dragOverFolderPath}
+                    tileSize={gridTileSize}
+                    onSelect={(p) => { setRightSelected(p); setActivePane('right'); }}
+                    onOpen={(entry) => openEntry(entry)}
+                    onContextMenu={(e, entry) => { setActivePane('right'); setRightSelected(entry.path); showCtx(e, entry); }}
+                    onPaneContextMenu={showRightPaneCtx}
+                    onCalculateFolderSize={calculateFolderSize}
+                    onDropToFolder={(e, targetPath) => { handleDropToPath(e, targetPath); setActivePane('right'); }}
+                    onPaneDrop={(e) => handlePaneDrop(e, true)}
+                    onQuickLook={(entry) => openEntry(entry)}
+                    formatSize={formatSize}
+                    formatDate={formatDate}
+                  />
+                ) : rightViewMode === 'treemap' ? (
+                  <TreemapView
+                    entries={rightVisibleEntries}
+                    sizeCache={sizeCache}
+                    onNavigate={(p) => loadRightDirectory(p)}
+                    onOpen={(e) => openEntry(e)}
+                    onSelect={(p) => { setRightSelected(p); setActivePane('right'); }}
+                    selectedPath={rightSelected}
+                    onCalculateAll={calculateAllVisibleSizes}
+                  />
+                ) : (
+                  <div 
+                    className="file-list flex-1 overflow-auto"
+                    onClick={activateRight}
+                    onContextMenu={showRightPaneCtx}
+                    onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
+                    onDrop={(e) => handlePaneDrop(e, true)}
+                  >
                     <table className="w-full">
                       <thead>
                         <tr>
@@ -2195,8 +2640,8 @@ export default function App() {
                         })}
                       </tbody>
                     </table>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
             )}
           </div>

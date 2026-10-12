@@ -1,0 +1,544 @@
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { 
+  Folder, File, FileText, Sparkles, Box, Eye, Calculator, RefreshCw, 
+  Music, Film, Code, Database, FileSpreadsheet, Archive
+} from 'lucide-react';
+
+export interface DirEntry {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  size?: number;
+  fileCount?: number;
+  dirCount?: number;
+  mtime: string;
+  ext?: string;
+}
+
+export interface SizeResult {
+  size: number;
+  fileCount: number;
+  dirCount: number;
+}
+
+export interface GridViewProps {
+  entries: DirEntry[];
+  selectedPath: string | null;
+  sizeCache: Record<string, SizeResult>;
+  clipboard: { paths: string[]; isCut: boolean } | null;
+  highlightedPath: string | null;
+  dragOverFolderPath: string | null;
+  tileSize?: 'small' | 'medium' | 'large';
+  onSelect: (path: string) => void;
+  onOpen: (entry: DirEntry) => void;
+  onContextMenu: (e: React.MouseEvent, entry: DirEntry) => void;
+  onPaneContextMenu?: (e: React.MouseEvent) => void;
+  onCalculateFolderSize: (path: string, force?: boolean) => void;
+  onDropToFolder?: (e: React.DragEvent, targetPath: string) => void;
+  onPaneDrop?: (e: React.DragEvent) => void;
+  onQuickLook?: (entry: DirEntry) => void;
+  formatSize: (bytes?: number) => string;
+  formatDate: (iso: string) => string;
+}
+
+const api = (typeof window !== 'undefined' ? (window as any).api : null) as any;
+
+const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif', '.ico', '.svg', '.tif', '.tiff', '.jfif']);
+const VIDEO_EXTS = new Set(['.mp4', '.mov', '.mkv', '.avi', '.wmv', '.webm', '.m4v', '.flv']);
+const AUDIO_EXTS = new Set(['.mp3', '.wav', '.ogg', '.flac', '.m4a', '.aac', '.wma']);
+const CODE_EXTS = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.json', '.html', '.htm', '.css', '.scss', 
+  '.py', '.rs', '.go', '.cpp', '.c', '.h', '.hpp', '.cs', '.java', '.md', 
+  '.toml', '.yaml', '.yml', '.xml', '.sql', '.sh', '.bat', '.ini', '.log', '.txt'
+]);
+const MODEL_EXTS = new Set(['.glb', '.gltf', '.obj', '.stl', '.ply', '.fbx']);
+const SPLAT_EXTS = new Set(['.splat', '.ksplat', '.spz']);
+const ARCHIVE_EXTS = new Set(['.zip', '.rar', '.7z', '.tar', '.gz', '.bz2', '.xz']);
+const SPREADSHEET_EXTS = new Set(['.csv', '.xlsx', '.xls', '.tsv']);
+
+export const GridView: React.FC<GridViewProps> = ({
+  entries,
+  selectedPath,
+  sizeCache,
+  clipboard,
+  highlightedPath,
+  dragOverFolderPath,
+  tileSize = 'medium',
+  onSelect,
+  onOpen,
+  onContextMenu,
+  onPaneContextMenu,
+  onCalculateFolderSize,
+  onDropToFolder,
+  onPaneDrop,
+  onQuickLook,
+  formatSize,
+  formatDate,
+}) => {
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // Map of filePath -> thumbnail image URL (cached jabro-media URL)
+  const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
+  // Set of filePaths that have completed attempt and don't have a visual thumbnail
+  const [noPreviewSet, setNoPreviewSet] = useState<Set<string>>(new Set());
+  // Snippets for code and text files
+  const [snippets, setSnippets] = useState<Record<string, string>>({});
+
+  // Fast lookup for entries by path
+  const entriesMapRef = useRef<Map<string, DirEntry>>(new Map());
+  // Track all paths that have been requested or are currently in flight
+  const requestedPathsRef = useRef<Set<string>>(new Set());
+
+  // Helper to extract clean lowercase extension
+  const getExt = useCallback((entry: DirEntry) => {
+    if (entry.ext) return entry.ext.toLowerCase();
+    const idx = entry.name.lastIndexOf('.');
+    return idx !== -1 ? entry.name.slice(idx).toLowerCase() : '';
+  }, []);
+
+  // Stable request thumbnail function (does not recreate on state updates)
+  const requestThumbnail = useCallback(async (entry: DirEntry) => {
+    if (!entry || entry.isDirectory || !api?.getThumbnail) return;
+    const path = entry.path;
+    if (requestedPathsRef.current.has(path)) return;
+    requestedPathsRef.current.add(path);
+
+    const ext = getExt(entry);
+    const isMedia = IMAGE_EXTS.has(ext) || VIDEO_EXTS.has(ext) || ext === '.pdf' || MODEL_EXTS.has(ext) || SPLAT_EXTS.has(ext);
+    const isCode = CODE_EXTS.has(ext);
+
+    if (!isMedia && !isCode) {
+      setNoPreviewSet(prev => new Set(prev).add(path));
+      return;
+    }
+
+    try {
+      if (isMedia) {
+        const res = await api.getThumbnail(entry.path, entry.mtime || '', entry.size);
+        if (res?.hasPreview && res.url) {
+          setThumbnails(prev => ({ ...prev, [path]: res.url }));
+        } else {
+          setNoPreviewSet(prev => new Set(prev).add(path));
+        }
+      } else if (isCode && api?.readFileSnippet) {
+        const snippet = await api.readFileSnippet(entry.path, 180);
+        if (snippet) {
+          setSnippets(prev => ({ ...prev, [path]: snippet }));
+        }
+        setNoPreviewSet(prev => new Set(prev).add(path));
+      }
+    } catch {
+      setNoPreviewSet(prev => new Set(prev).add(path));
+    }
+  }, [getExt]);
+
+  // Listen for newly saved 3D/Splat thumbnails generated by ThreeViewer
+  useEffect(() => {
+    const handleThumbSaved = (e: any) => {
+      const savedPath = e?.detail?.filePath;
+      if (savedPath && api?.getThumbnail) {
+        api.getThumbnail(savedPath, '', 0).then((res: any) => {
+          if (res?.hasPreview && res.url) {
+            setThumbnails(prev => ({ ...prev, [savedPath]: res.url }));
+            setNoPreviewSet(prev => {
+              const next = new Set(prev);
+              next.delete(savedPath);
+              return next;
+            });
+          }
+        }).catch(() => {});
+      }
+    };
+    window.addEventListener('jabro-thumbnail-saved', handleThumbSaved);
+    return () => window.removeEventListener('jabro-thumbnail-saved', handleThumbSaved);
+  }, []);
+
+  // When entries change (e.g. folder opened or navigated):
+  // 1. Sync entries map
+  // 2. Batch check disk cache (<1ms)
+  // 3. Proactively trigger first 30 visible candidates
+  useEffect(() => {
+    const map = new Map<string, DirEntry>();
+    for (const e of entries) {
+      map.set(e.path, e);
+    }
+    entriesMapRef.current = map;
+    requestedPathsRef.current.clear();
+    setThumbnails({});
+    setNoPreviewSet(new Set());
+    setSnippets({});
+
+    if (entries.length === 0) return;
+
+    // 1. Check disk cache for existing thumbnails (including 3D models and splats)
+    const previewableCandidates = entries.filter(e => {
+      if (e.isDirectory) return false;
+      const ext = getExt(e);
+      return IMAGE_EXTS.has(ext) || VIDEO_EXTS.has(ext) || ext === '.pdf' || MODEL_EXTS.has(ext) || SPLAT_EXTS.has(ext);
+    });
+
+    if (previewableCandidates.length > 0 && api?.getThumbnailsBatch) {
+      api.getThumbnailsBatch(previewableCandidates.map(e => ({
+        filePath: e.path,
+        mtime: e.mtime || '',
+        size: e.size,
+      }))).then((batch: Record<string, string>) => {
+        if (batch && Object.keys(batch).length > 0) {
+          setThumbnails(prev => ({ ...prev, ...batch }));
+          for (const p of Object.keys(batch)) {
+            requestedPathsRef.current.add(p);
+          }
+        }
+      }).catch(() => {});
+    }
+
+    // 2. Proactively trigger previews for the first 30 candidates so the screen updates immediately!
+    const immediateCandidates = entries.filter(e => {
+      if (e.isDirectory) return false;
+      const ext = getExt(e);
+      return IMAGE_EXTS.has(ext) || VIDEO_EXTS.has(ext) || ext === '.pdf' || CODE_EXTS.has(ext) || MODEL_EXTS.has(ext) || SPLAT_EXTS.has(ext);
+    }).slice(0, 30);
+
+    for (const item of immediateCandidates) {
+      requestThumbnail(item);
+    }
+  }, [entries, getExt, requestThumbnail]);
+
+  // Observer to lazily load remaining previews as user scrolls
+  useEffect(() => {
+    if (!containerRef.current || entries.length === 0) return;
+
+    const observer = new IntersectionObserver((observedEntries) => {
+      for (const obs of observedEntries) {
+        if (obs.isIntersecting) {
+          const path = obs.target.getAttribute('data-file-path');
+          if (path) {
+            const entry = entriesMapRef.current.get(path);
+            if (entry) {
+              requestThumbnail(entry);
+            }
+          }
+        }
+      }
+    }, {
+      root: containerRef.current,
+      rootMargin: '350px 0px',
+      threshold: 0.01,
+    });
+
+    // Observe all tile elements rendered inside the container
+    const tileNodes = containerRef.current.querySelectorAll('[data-file-path]');
+    tileNodes.forEach(node => observer.observe(node));
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [entries, requestThumbnail]);
+
+  // Grid sizing classes based on tileSize
+  const gridStyle = useMemo(() => {
+    switch (tileSize) {
+      case 'small':
+        return 'grid-cols-[repeat(auto-fill,minmax(130px,1fr))] gap-2.5 p-3';
+      case 'large':
+        return 'grid-cols-[repeat(auto-fill,minmax(230px,1fr))] gap-4 p-4';
+      case 'medium':
+      default:
+        return 'grid-cols-[repeat(auto-fill,minmax(170px,1fr))] gap-3 p-3.5';
+    }
+  }, [tileSize]);
+
+  // Keyboard navigation across grid
+  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+    if (entries.length === 0) return;
+    const currentIndex = selectedPath ? entries.findIndex(x => x.path === selectedPath) : -1;
+
+    let targetIndex = -1;
+    if (e.key === 'ArrowRight') {
+      targetIndex = currentIndex >= 0 && currentIndex < entries.length - 1 ? currentIndex + 1 : 0;
+    } else if (e.key === 'ArrowLeft') {
+      targetIndex = currentIndex > 0 ? currentIndex - 1 : entries.length - 1;
+    } else if (e.key === 'Enter') {
+      if (currentIndex >= 0) {
+        onOpen(entries[currentIndex]);
+      }
+      return;
+    } else if (e.code === 'Space' && currentIndex >= 0) {
+      e.preventDefault();
+      onQuickLook?.(entries[currentIndex]);
+      return;
+    }
+
+    if (targetIndex >= 0 && targetIndex < entries.length) {
+      e.preventDefault();
+      const nextEntry = entries[targetIndex];
+      onSelect(nextEntry.path);
+    }
+  }, [entries, selectedPath, onOpen, onQuickLook, onSelect]);
+
+  return (
+    <div
+      ref={containerRef}
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
+      onClick={() => onSelect('')}
+      onContextMenu={(e) => {
+        if (e.target === e.currentTarget && onPaneContextMenu) {
+          onPaneContextMenu(e);
+        }
+      }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+      }}
+      onDrop={(e) => {
+        if (onPaneDrop) onPaneDrop(e);
+      }}
+      className="file-list h-full overflow-y-auto outline-none select-none focus:ring-0"
+    >
+      <div className={`grid ${gridStyle} auto-rows-max`}>
+        {entries.map((entry) => {
+          const isSelected = selectedPath === entry.path;
+          const isCut = clipboard?.isCut && clipboard?.paths.includes(entry.path);
+          const isJustPasted = highlightedPath === entry.path;
+          const isDropTarget = dragOverFolderPath === entry.path;
+          const ext = entry.ext?.toLowerCase() || '';
+          const thumbUrl = thumbnails[entry.path];
+
+          // Compute size for directory from cache or stats
+          const cachedSize = sizeCache[entry.path];
+          const displayedSize = entry.isDirectory ? (cachedSize?.size ?? entry.size) : entry.size;
+          const itemCount = entry.isDirectory ? ((entry.dirCount || 0) + (entry.fileCount || 0) || cachedSize?.fileCount) : null;
+
+          return (
+            <div
+              key={entry.path}
+              data-file-path={entry.path}
+              draggable
+              onDragStart={(e) => {
+                e.dataTransfer.setData('application/x-jabro-path', JSON.stringify([entry.path]));
+                e.dataTransfer.setData('text/plain', entry.path);
+                e.dataTransfer.effectAllowed = 'copyMove';
+              }}
+              onDragOver={entry.isDirectory ? (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                e.dataTransfer.dropEffect = e.ctrlKey ? 'copy' : 'move';
+              } : undefined}
+              onDrop={entry.isDirectory ? (e) => {
+                e.stopPropagation();
+                if (onDropToFolder) onDropToFolder(e, entry.path);
+              } : undefined}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelect(entry.path);
+              }}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                onOpen(entry);
+              }}
+              onContextMenu={(e) => {
+                e.stopPropagation();
+                onSelect(entry.path);
+                onContextMenu(e, entry);
+              }}
+              className={`
+                group relative flex flex-col rounded-xl overflow-hidden border cursor-pointer
+                transition-all duration-150 ease-out select-none
+                ${isSelected 
+                  ? 'bg-blue-600/15 border-blue-500/70 shadow-lg shadow-blue-500/15 ring-2 ring-blue-500/60' 
+                  : 'bg-zinc-900/50 hover:bg-zinc-800/80 border-zinc-800/80 hover:border-zinc-700/80 hover:shadow-md'
+                }
+                ${isCut ? 'opacity-40 grayscale-[0.5]' : ''}
+                ${isDropTarget ? 'ring-2 ring-emerald-500 bg-emerald-500/15 scale-102' : ''}
+                ${isJustPasted ? 'just-pasted ring-2 ring-emerald-400' : ''}
+              `}
+            >
+              {/* Top Preview Canvas */}
+              <div className="relative w-full aspect-square bg-[#0b0b0d] flex items-center justify-center overflow-hidden border-b border-zinc-800/40">
+                {/* 1. Folders */}
+                {entry.isDirectory ? (
+                  <div className="flex flex-col items-center justify-center gap-2 p-3 text-center">
+                    <div className="relative">
+                      <Folder 
+                        size={tileSize === 'small' ? 44 : tileSize === 'large' ? 68 : 54} 
+                        className="text-blue-400/90 group-hover:text-blue-300 transition-colors drop-shadow-md" 
+                        fill="currentColor"
+                        fillOpacity={0.15}
+                      />
+                      {displayedSize != null && (
+                        <div className="absolute -bottom-1 -right-1 px-1.5 py-0.5 rounded-full bg-blue-500/20 border border-blue-500/40 text-[9px] font-medium text-blue-300">
+                          {formatSize(displayedSize)}
+                        </div>
+                      )}
+                    </div>
+                    {itemCount != null && itemCount > 0 && (
+                      <span className="text-[10px] text-zinc-400 font-medium px-2 py-0.5 rounded-full bg-zinc-800/80">
+                        {itemCount} {itemCount === 1 ? 'item' : 'items'}
+                      </span>
+                    )}
+                  </div>
+                ) : thumbUrl ? (
+                  /* 2. Visual Media with Cached Thumbnail */
+                  <div className="w-full h-full relative flex items-center justify-center bg-black/40">
+                    <img
+                      src={thumbUrl}
+                      alt={entry.name}
+                      loading="lazy"
+                      onError={() => {
+                        setThumbnails(prev => {
+                          const next = { ...prev };
+                          delete next[entry.path];
+                          return next;
+                        });
+                        setNoPreviewSet(prev => new Set(prev).add(entry.path));
+                      }}
+                      className="w-full h-full object-cover transition-transform duration-200 group-hover:scale-105"
+                    />
+                    {/* Video play overlay badge */}
+                    {VIDEO_EXTS.has(ext) && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/25 group-hover:bg-black/10 transition-colors">
+                        <div className="p-2 rounded-full bg-black/60 backdrop-blur-xs text-white border border-white/20 shadow-lg">
+                          <Film size={tileSize === 'small' ? 14 : 18} />
+                        </div>
+                      </div>
+                    )}
+                    {/* Format Pill in top-right */}
+                    <div className="absolute top-1.5 right-1.5 px-1.5 py-0.5 rounded bg-black/75 backdrop-blur-md border border-white/10 text-[9px] font-mono font-bold uppercase text-zinc-200 shadow-sm">
+                      {ext.replace('.', '')}
+                    </div>
+                  </div>
+                ) : snippets[entry.path] ? (
+                  /* 3. Text / Code snippet card */
+                  <div className="w-full h-full p-2.5 font-mono text-[9px] leading-relaxed text-zinc-400 bg-[#0d0d10] flex flex-col justify-between overflow-hidden">
+                    <div className="space-y-0.5 opacity-80 overflow-hidden line-clamp-6 select-none whitespace-pre-wrap break-all">
+                      {snippets[entry.path]}
+                    </div>
+                    <div className="flex items-center justify-between pt-1 border-t border-zinc-800/60 text-[9px] text-zinc-500">
+                      <span className="flex items-center gap-1 text-emerald-400 font-semibold uppercase">
+                        <Code size={10} /> {ext.replace('.', '')}
+                      </span>
+                      <span>{formatSize(entry.size)}</span>
+                    </div>
+                  </div>
+                ) : (
+                  /* 4. Categorized High-Quality Fallback Icon */
+                  <div className="flex flex-col items-center justify-center gap-2 p-3 text-center">
+                    {ext === '.pdf' ? (
+                      <div className="p-3 rounded-xl bg-rose-500/10 text-rose-400 border border-rose-500/20">
+                        <FileText size={tileSize === 'small' ? 26 : 36} />
+                      </div>
+                    ) : AUDIO_EXTS.has(ext) ? (
+                      <div className="p-3 rounded-xl bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                        <Music size={tileSize === 'small' ? 26 : 36} />
+                      </div>
+                    ) : VIDEO_EXTS.has(ext) ? (
+                      <div className="p-3 rounded-xl bg-sky-500/10 text-sky-400 border border-sky-500/20">
+                        <Film size={tileSize === 'small' ? 26 : 36} />
+                      </div>
+                    ) : MODEL_EXTS.has(ext) ? (
+                      <div className="flex flex-col items-center gap-1.5">
+                        <div className="p-3 rounded-xl bg-indigo-500/15 text-indigo-400 border border-indigo-500/25 group-hover:scale-105 transition-transform">
+                          <Box size={tileSize === 'small' ? 24 : 34} />
+                        </div>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onQuickLook?.(entry); }}
+                          className="px-2 py-0.5 rounded-full bg-indigo-500/20 hover:bg-indigo-500/35 text-indigo-300 text-[10px] font-medium transition cursor-pointer flex items-center gap-1 border border-indigo-500/30"
+                          title="Quick Look 3D Model"
+                        >
+                          <Eye size={10} /> 3D View
+                        </button>
+                      </div>
+                    ) : SPLAT_EXTS.has(ext) ? (
+                      <div className="flex flex-col items-center gap-1.5">
+                        <div className="p-3 rounded-xl bg-violet-500/15 text-violet-400 border border-violet-500/25 group-hover:scale-105 transition-transform">
+                          <Sparkles size={tileSize === 'small' ? 24 : 34} />
+                        </div>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); onQuickLook?.(entry); }}
+                          className="px-2 py-0.5 rounded-full bg-violet-500/20 hover:bg-violet-500/35 text-violet-300 text-[10px] font-medium transition cursor-pointer flex items-center gap-1 border border-violet-500/30"
+                          title="Quick Look Gaussian Splat"
+                        >
+                          <Eye size={10} /> View Splat
+                        </button>
+                      </div>
+                    ) : ARCHIVE_EXTS.has(ext) ? (
+                      <div className="p-3 rounded-xl bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                        <Archive size={tileSize === 'small' ? 26 : 36} />
+                      </div>
+                    ) : SPREADSHEET_EXTS.has(ext) ? (
+                      <div className="p-3 rounded-xl bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                        <FileSpreadsheet size={tileSize === 'small' ? 26 : 36} />
+                      </div>
+                    ) : CODE_EXTS.has(ext) ? (
+                      <div className="p-3 rounded-xl bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
+                        <Code size={tileSize === 'small' ? 26 : 36} />
+                      </div>
+                    ) : (
+                      <div className="p-3 rounded-xl bg-zinc-800 text-zinc-400 border border-zinc-700">
+                        <File size={tileSize === 'small' ? 26 : 36} />
+                      </div>
+                    )}
+
+                    {ext && (
+                      <span className="text-[10px] font-mono uppercase font-bold px-1.5 py-0.5 rounded bg-zinc-800/80 text-zinc-300 border border-zinc-700/60">
+                        {ext.replace('.', '')}
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {/* Quick Look hover trigger in top-left */}
+                {!entry.isDirectory && onQuickLook && (
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSelect(entry.path);
+                      onQuickLook(entry);
+                    }}
+                    title="Quick Look (Space)"
+                    className="absolute top-1.5 left-1.5 opacity-0 group-hover:opacity-100 p-1.5 rounded-lg bg-zinc-900/85 hover:bg-blue-600 text-zinc-300 hover:text-white transition-all backdrop-blur-md shadow-md border border-white/10"
+                  >
+                    <Eye size={12} />
+                  </button>
+                )}
+              </div>
+
+              {/* Bottom Metadata Section */}
+              <div className="p-2.5 flex flex-col gap-1 bg-[#121214] flex-1 justify-between">
+                <div 
+                  className="font-medium text-xs text-zinc-200 line-clamp-2 leading-tight break-all group-hover:text-white transition-colors"
+                  title={entry.name}
+                >
+                  {entry.name}
+                </div>
+
+                <div className="flex items-center justify-between text-[11px] text-zinc-400 mt-1">
+                  {entry.isDirectory ? (
+                    <div 
+                      className="flex items-center gap-1 hover:text-blue-400 transition cursor-pointer"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onCalculateFolderSize(entry.path, true);
+                      }}
+                      title="Click to calculate folder size"
+                    >
+                      <span>{formatSize(displayedSize)}</span>
+                      {displayedSize == null && <Calculator size={10} className="text-blue-400" />}
+                    </div>
+                  ) : (
+                    <span>{formatSize(entry.size)}</span>
+                  )}
+
+                  <span className="text-[10px] text-zinc-500 tabular-nums">
+                    {formatDate(entry.mtime).split(' ')[0]}
+                  </span>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+};

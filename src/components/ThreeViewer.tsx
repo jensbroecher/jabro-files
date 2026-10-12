@@ -5,18 +5,89 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
 import { PLYLoader } from 'three/examples/jsm/loaders/PLYLoader.js';
+import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js';
 import * as GaussianSplats3D from '@mkkellogg/gaussian-splats-3d';
 import { 
   RotateCw, RotateCcw, ArrowUpDown, Grid, Eye, Box, Sparkles, Loader2, AlertCircle, RefreshCw, Disc,
-  Camera, Layers, Palette
+  Camera, Layers, Palette, Sun, ChevronDown, Check
 } from 'lucide-react';
 
-type BgPreset = 'studio' | 'mist' | 'neutral';
+export type BgPreset = 'mist' | 'studio' | 'slate' | 'neutral' | 'charcoal' | 'whitish' | 'pureWhite';
 
-const BG_CONFIG: Record<BgPreset, { label: string; color: number; hex: string; fog: boolean }> = {
-  studio: { label: 'Studio Dark', color: 0x0f0f12, hex: '#0f0f12', fog: false },
+export const BG_CONFIG: Record<BgPreset, { label: string; color: number; hex: string; fog: boolean; isLight?: boolean }> = {
   mist: { label: 'Cold Mist', color: 0x0c141f, hex: '#0c141f', fog: true },
+  studio: { label: 'Studio Dark', color: 0x0f0f12, hex: '#0f0f12', fog: false },
+  slate: { label: 'Midnight Slate', color: 0x0f172a, hex: '#0f172a', fog: false },
   neutral: { label: 'Neutral Gray', color: 0x22232a, hex: '#22232a', fog: false },
+  charcoal: { label: 'Warm Charcoal', color: 0x1c1917, hex: '#1c1917', fog: false },
+  whitish: { label: 'Studio Light', color: 0xf1f5f9, hex: '#f1f5f9', fog: false, isLight: true },
+  pureWhite: { label: 'Pure White', color: 0xffffff, hex: '#ffffff', fog: false, isLight: true },
+};
+
+export type LightPreset = 'studio' | 'daylight' | 'dramatic' | 'sunset' | 'cyberpunk' | 'neutral';
+
+export interface LightConfig {
+  label: string;
+  description: string;
+  ambient: { color: number; intensity: number };
+  dir1: { color: number; intensity: number; pos: [number, number, number] };
+  dir2?: { color: number; intensity: number; pos: [number, number, number] };
+  dir3?: { color: number; intensity: number; pos: [number, number, number] };
+  hemi?: { skyColor: number; groundColor: number; intensity: number };
+}
+
+export const LIGHT_CONFIGS: Record<LightPreset, LightConfig> = {
+  studio: {
+    label: 'Studio 3-Point',
+    description: 'Clean balanced studio lighting with warm key and cool fill',
+    ambient: { color: 0xffffff, intensity: 0.8 },
+    dir1: { color: 0xffffff, intensity: 1.4, pos: [8, 14, 10] },
+    dir2: { color: 0x93c5fd, intensity: 0.7, pos: [-10, 5, -8] },
+    dir3: { color: 0xffffff, intensity: 0.5, pos: [0, -6, -10] },
+    hemi: { skyColor: 0xffffff, groundColor: 0x1e293b, intensity: 0.5 },
+  },
+  daylight: {
+    label: 'Bright Sun',
+    description: 'Crisp outdoor sunlight with high brightness and sky bounce',
+    ambient: { color: 0xffffff, intensity: 1.1 },
+    dir1: { color: 0xfffbeb, intensity: 2.2, pos: [12, 18, 8] },
+    dir2: { color: 0xbae6fd, intensity: 0.8, pos: [-10, 8, -10] },
+    hemi: { skyColor: 0xe0f2fe, groundColor: 0x334155, intensity: 0.8 },
+  },
+  dramatic: {
+    label: 'Dramatic Rim',
+    description: 'Cinematic high-contrast with electric rim highlights',
+    ambient: { color: 0x1e293b, intensity: 0.25 },
+    dir1: { color: 0xffffff, intensity: 1.6, pos: [10, 8, 5] },
+    dir2: { color: 0x38bdf8, intensity: 2.4, pos: [-10, 10, -12] },
+    dir3: { color: 0x475569, intensity: 0.4, pos: [0, -8, 8] },
+    hemi: { skyColor: 0x334155, groundColor: 0x090d16, intensity: 0.25 },
+  },
+  sunset: {
+    label: 'Golden Sunset',
+    description: 'Golden hour amber directional sun with dusk purple fill',
+    ambient: { color: 0xfef3c7, intensity: 0.6 },
+    dir1: { color: 0xf97316, intensity: 2.2, pos: [12, 6, 8] },
+    dir2: { color: 0xa855f7, intensity: 0.9, pos: [-10, 5, -10] },
+    hemi: { skyColor: 0xfbbf24, groundColor: 0x581c87, intensity: 0.6 },
+  },
+  cyberpunk: {
+    label: 'Cyberpunk Neon',
+    description: 'Stylized dual-tone neon cyan and hot magenta contrast',
+    ambient: { color: 0x0f172a, intensity: 0.4 },
+    dir1: { color: 0x06b6d4, intensity: 2.2, pos: [10, 10, 10] },
+    dir2: { color: 0xec4899, intensity: 2.0, pos: [-10, 6, -10] },
+    dir3: { color: 0xf59e0b, intensity: 0.8, pos: [0, 15, 0] },
+    hemi: { skyColor: 0x06b6d4, groundColor: 0x831843, intensity: 0.5 },
+  },
+  neutral: {
+    label: 'Flat Inspection',
+    description: 'Uniform shadowless lighting for CAD and texture inspection',
+    ambient: { color: 0xffffff, intensity: 1.8 },
+    dir1: { color: 0xffffff, intensity: 0.8, pos: [0, 15, 10] },
+    dir2: { color: 0xffffff, intensity: 0.8, pos: [0, -10, -10] },
+    hemi: { skyColor: 0xffffff, groundColor: 0xffffff, intensity: 0.7 },
+  },
 };
 
 interface ThreeViewerProps {
@@ -34,10 +105,17 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
   const [turntableSpeed, setTurntableSpeed] = useState<0.5 | 1 | 2>(1);
   const [pointCloudMode, setPointCloudMode] = useState(false);
   const [bgPreset, setBgPreset] = useState<BgPreset>('mist');
+  const [showBgMenu, setShowBgMenu] = useState(false);
+  const [lightPreset, setLightPreset] = useState<LightPreset>('studio');
+  const [lightIntensity, setLightIntensity] = useState<number>(1.0);
+  const [showLightMenu, setShowLightMenu] = useState(false);
   const [flashSnapshot, setFlashSnapshot] = useState(false);
   const [wireframe, setWireframe] = useState(false);
   const [showGrid, setShowGrid] = useState(true);
   const [stats, setStats] = useState<{ vertices: number; triangles: number; splats?: number } | null>(null);
+
+  const bgMenuRef = useRef<HTMLDivElement>(null);
+  const lightMenuRef = useRef<HTMLDivElement>(null);
 
   const ext = (fileName.split('.').pop() || '').toLowerCase();
   const isDefaultSplat = isGaussianSplat || ['splat', 'ksplat', 'spz'].includes(ext);
@@ -69,9 +147,11 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
   const modelRootRef = useRef<THREE.Object3D | null>(null);
   const gridHelperRef = useRef<THREE.GridHelper | null>(null);
   const animFrameIdRef = useRef<number | null>(null);
+  const mixerRef = useRef<THREE.AnimationMixer | null>(null);
 
   // References for Gaussian Splatting
   const splatViewerRef = useRef<any>(null);
+  const splatRendererRef = useRef<THREE.WebGLRenderer | null>(null);
 
   // Build clean streaming URL
   const mediaUrl = `jabro-media://localhost?path=${encodeURIComponent(filePath)}`;
@@ -199,23 +279,50 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
     });
   }, []);
 
-  // Cycle background presets: Cold Mist -> Studio Dark -> Neutral Gray
+  const lightsGroupRef = useRef<THREE.Group | null>(null);
+
+  // Close dropdown menus when clicking outside
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (bgMenuRef.current && !bgMenuRef.current.contains(e.target as Node)) {
+        setShowBgMenu(false);
+      }
+      if (lightMenuRef.current && !lightMenuRef.current.contains(e.target as Node)) {
+        setShowLightMenu(false);
+      }
+    };
+    window.addEventListener('mousedown', handleOutsideClick);
+    return () => window.removeEventListener('mousedown', handleOutsideClick);
+  }, []);
+
+  // Cycle background presets: Cold Mist -> Studio Dark -> Midnight Slate -> Neutral Gray -> Warm Charcoal -> Studio Light -> Pure White
   const cycleBgPreset = useCallback(() => {
     setBgPreset(curr => {
       if (curr === 'mist') return 'studio';
-      if (curr === 'studio') return 'neutral';
+      if (curr === 'studio') return 'slate';
+      if (curr === 'slate') return 'neutral';
+      if (curr === 'neutral') return 'charcoal';
+      if (curr === 'charcoal') return 'whitish';
+      if (curr === 'whitish') return 'pureWhite';
       return 'mist';
     });
   }, []);
 
-  // Dynamically update background color and fog across renderers
+  // Dynamically update background color, fog, clear color, and grid across renderers
   useEffect(() => {
     const conf = BG_CONFIG[bgPreset];
     if (sceneRef.current) {
       sceneRef.current.background = new THREE.Color(conf.color);
-      sceneRef.current.fog = conf.fog ? new THREE.FogExp2(conf.color, 0.022) : null;
+      sceneRef.current.fog = conf.fog ? new THREE.FogExp2(conf.color, 0.02) : null;
     }
-    if (splatViewerRef.current?.renderer) {
+    if (rendererRef.current) {
+      rendererRef.current.setClearColor(new THREE.Color(conf.color), 1.0);
+    }
+    if (splatRendererRef.current) {
+      try {
+        splatRendererRef.current.setClearColor(new THREE.Color(conf.color), 1.0);
+      } catch {}
+    } else if (splatViewerRef.current?.renderer) {
       try {
         splatViewerRef.current.renderer.setClearColor(new THREE.Color(conf.color), 1.0);
       } catch {}
@@ -223,7 +330,89 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
     if (containerRef.current) {
       containerRef.current.style.backgroundColor = conf.hex;
     }
+    if (gridHelperRef.current) {
+      try {
+        const mat = (gridHelperRef.current as any).material;
+        if (mat) {
+          if (Array.isArray(mat)) {
+            mat[0].color.setHex(0x3b82f6);
+            mat[1].color.setHex(conf.isLight ? 0x94a3b8 : 0x27272a);
+          } else if (mat.color) {
+            mat.color.setHex(conf.isLight ? 0x94a3b8 : 0x27272a);
+          }
+        }
+      } catch {}
+    }
   }, [bgPreset]);
+
+  // Lighting manager function
+  const applyLighting = useCallback((scene: THREE.Scene, presetKey: LightPreset, intensity: number) => {
+    if (lightsGroupRef.current) {
+      scene.remove(lightsGroupRef.current);
+      lightsGroupRef.current.clear();
+      lightsGroupRef.current = null;
+    }
+
+    const group = new THREE.Group();
+    group.name = 'JabroLightingGroup';
+    const conf = LIGHT_CONFIGS[presetKey] || LIGHT_CONFIGS.studio;
+
+    const amb = new THREE.AmbientLight(conf.ambient.color, conf.ambient.intensity * intensity);
+    group.add(amb);
+
+    const dir1 = new THREE.DirectionalLight(conf.dir1.color, conf.dir1.intensity * intensity);
+    dir1.position.set(...conf.dir1.pos);
+    group.add(dir1);
+
+    if (conf.dir2) {
+      const dir2 = new THREE.DirectionalLight(conf.dir2.color, conf.dir2.intensity * intensity);
+      dir2.position.set(...conf.dir2.pos);
+      group.add(dir2);
+    }
+
+    if (conf.dir3) {
+      const dir3 = new THREE.DirectionalLight(conf.dir3.color, conf.dir3.intensity * intensity);
+      dir3.position.set(...conf.dir3.pos);
+      group.add(dir3);
+    }
+
+    if (conf.hemi) {
+      const hemi = new THREE.HemisphereLight(conf.hemi.skyColor, conf.hemi.groundColor, conf.hemi.intensity * intensity);
+      group.add(hemi);
+    }
+
+    scene.add(group);
+    lightsGroupRef.current = group;
+  }, []);
+
+  // Update lighting on active scene whenever preset or intensity changes
+  useEffect(() => {
+    if (sceneRef.current) {
+      applyLighting(sceneRef.current, lightPreset, lightIntensity);
+    }
+  }, [lightPreset, lightIntensity, applyLighting]);
+
+  // Cycle lighting presets
+  const cycleLightPreset = useCallback(() => {
+    setLightPreset(curr => {
+      if (curr === 'studio') return 'daylight';
+      if (curr === 'daylight') return 'dramatic';
+      if (curr === 'dramatic') return 'sunset';
+      if (curr === 'sunset') return 'cyberpunk';
+      if (curr === 'cyberpunk') return 'neutral';
+      return 'studio';
+    });
+  }, []);
+
+  // Cycle lighting intensity: 0.6x -> 1.0x -> 1.5x -> 2.0x -> 0.6x
+  const cycleLightIntensity = useCallback(() => {
+    setLightIntensity(curr => {
+      if (curr <= 0.6) return 1.0;
+      if (curr <= 1.0) return 1.5;
+      if (curr <= 1.5) return 2.0;
+      return 0.6;
+    });
+  }, []);
 
   // Toggle point cloud rendering mode for Gaussian Splats
   const togglePointCloud = useCallback(() => {
@@ -256,7 +445,7 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
             splatViewerRef.current.render();
           }
         } catch {}
-        canvas = splatViewerRef.current?.renderer?.domElement || containerRef.current?.querySelector('canvas');
+        canvas = splatRendererRef.current?.domElement || splatViewerRef.current?.renderer?.domElement || containerRef.current?.querySelector('canvas');
       } else {
         if (rendererRef.current && sceneRef.current && cameraRef.current) {
           rendererRef.current.render(sceneRef.current, cameraRef.current);
@@ -279,19 +468,40 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
 
   // Gaussian Splatting loader
   const initGaussianSplat = useCallback(async () => {
-    if (!containerRef.current) return;
+    const container = containerRef.current;
+    if (!container) return;
     console.log('[ThreeViewer] initGaussianSplat starting for:', fileName, mediaUrl);
     setLoading(true);
     setLoadingProgress(0);
     setErrorMessage(null);
 
     // Clean any prior contents
-    containerRef.current.innerHTML = '';
+    container.innerHTML = '';
+
+    // Create a dedicated WebGLRenderer with preserveDrawingBuffer enabled
+    // This allows crisp snapshots and tile thumbnail generation without black frames
+    const width = container.clientWidth || 800;
+    const height = container.clientHeight || 600;
+
+    const splatRenderer = new THREE.WebGLRenderer({
+      antialias: false,
+      precision: 'highp',
+      preserveDrawingBuffer: true,
+      alpha: false,
+    });
+    splatRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    splatRenderer.setSize(width, height);
+    const conf = BG_CONFIG[bgPreset];
+    splatRenderer.setClearColor(new THREE.Color(conf.color), 1.0);
+
+    container.appendChild(splatRenderer.domElement);
+    splatRendererRef.current = splatRenderer;
 
     try {
       // Natural upright orientation: cameraUp is [0, 1, 0]
       const viewer = new GaussianSplats3D.Viewer({
-        rootElement: containerRef.current,
+        rootElement: container,
+        renderer: splatRenderer,
         cameraUp: [0, 1, 0],
         initialCameraPosition: [0, 1.5, 4],
         initialCameraLookAt: [0, 0, 0],
@@ -300,6 +510,7 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
         sharedMemoryForWorkers: true,
         dynamicScene: true,
         gpuAcceleratedSort: false,
+        sceneRevealMode: GaussianSplats3D.SceneRevealMode.Instant,
       });
 
       splatViewerRef.current = viewer;
@@ -330,8 +541,7 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
 
       viewer.start();
       try {
-        const conf = BG_CONFIG[bgPreset];
-        viewer.renderer?.setClearColor(new THREE.Color(conf.color), 1.0);
+        splatRenderer.setClearColor(new THREE.Color(conf.color), 1.0);
         if (pointCloudMode) {
           viewer.getSplatMesh()?.setPointCloudModeEnabled(true);
         }
@@ -348,14 +558,46 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
       } catch (err) {
         console.error('[ThreeViewer] Error getting splat count:', err);
       }
+
+      // Handle resize
+      const handleResize = () => {
+        if (!containerRef.current || !splatRendererRef.current) return;
+        const w = containerRef.current.clientWidth;
+        const h = containerRef.current.clientHeight;
+        splatRendererRef.current.setSize(w, h);
+        splatViewerRef.current?.forceRenderNextFrame?.();
+      };
+      window.addEventListener('resize', handleResize);
+
+      // Auto-save rendered splat preview to central thumbnail cache
+      setTimeout(() => {
+        try {
+          const api = (window as any).api;
+          if (splatRendererRef.current && api?.saveThumbnailCache) {
+            if (typeof splatViewerRef.current?.render === 'function') {
+              splatViewerRef.current.render();
+            }
+            const dataUrl = splatRendererRef.current.domElement.toDataURL('image/jpeg', 0.88);
+            if (dataUrl && dataUrl.length > 200) {
+              api.saveThumbnailCache(filePath, dataUrl).then((ok: boolean) => {
+                if (ok) {
+                  window.dispatchEvent(new CustomEvent('jabro-thumbnail-saved', { detail: { filePath } }));
+                }
+              }).catch(() => {});
+            }
+          }
+        } catch (err) {
+          console.error('[ThreeViewer] Splat thumbnail auto-save error:', err);
+        }
+      }, 1000);
     } catch (err: any) {
       console.error('[ThreeViewer] Failed to load Gaussian Splat:', err);
       setErrorMessage(err?.message || 'Failed to initialize Gaussian Splatting scene.');
       setLoading(false);
     }
-  }, [ext, mediaUrl, fileName]);
+  }, [ext, mediaUrl, fileName, autoRotate, turntableSpeed, pointCloudMode, filePath]);
 
-  // Standard Three.js loader for GLTF, OBJ, STL, PLY
+  // Standard Three.js loader for GLTF, OBJ, STL, PLY, FBX
   const initStandardThree = useCallback(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -371,7 +613,7 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
     const scene = new THREE.Scene();
     const conf = BG_CONFIG[bgPreset];
     scene.background = new THREE.Color(conf.color);
-    if (conf.fog) scene.fog = new THREE.FogExp2(conf.color, 0.022);
+    if (conf.fog) scene.fog = new THREE.FogExp2(conf.color, 0.02);
     sceneRef.current = scene;
 
     const camera = new THREE.PerspectiveCamera(45, width / height, 0.05, 1000);
@@ -383,6 +625,7 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.setSize(width, height);
+    renderer.setClearColor(new THREE.Color(conf.color), 1.0);
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.1;
     container.innerHTML = '';
@@ -400,62 +643,32 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
     controls.autoRotateSpeed = turntableSpeed * 1.5;
     controlsRef.current = controls;
 
-    // Lighting setup
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.9);
-    scene.add(ambientLight);
-
-    const dirLight1 = new THREE.DirectionalLight(0xffffff, 1.4);
-    dirLight1.position.set(10, 15, 10);
-    scene.add(dirLight1);
-
-    const dirLight2 = new THREE.DirectionalLight(0x93c5fd, 0.6);
-    dirLight2.position.set(-10, -5, -10);
-    scene.add(dirLight2);
-
-    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x18181b, 0.6);
-    scene.add(hemiLight);
+    // Lighting setup via configured preset & intensity
+    applyLighting(scene, lightPreset, lightIntensity);
 
     // Center and frame any loaded 3D model
-    const setupModel = (object: THREE.Object3D) => {
-      const box = new THREE.Box3().setFromObject(object);
-      const size = box.getSize(new THREE.Vector3());
-      const center = box.getCenter(new THREE.Vector3());
-
-      object.position.x -= center.x;
-      object.position.y -= center.y;
-      object.position.z -= center.z;
-
-      scene.add(object);
-      modelRootRef.current = object;
-
-      const maxDim = Math.max(size.x, size.y, size.z);
-      const fov = camera.fov * (Math.PI / 180);
-      let cameraDistance = Math.abs(maxDim / 2 / Math.tan(fov / 2)) * 1.5;
-      if (cameraDistance === 0 || isNaN(cameraDistance)) cameraDistance = 5;
-
-      camera.position.set(cameraDistance * 0.7, cameraDistance * 0.5, cameraDistance);
-      camera.near = Math.max(0.01, cameraDistance / 100);
-      camera.far = Math.max(500, cameraDistance * 20);
-      camera.updateProjectionMatrix();
-
-      controls.target.set(0, 0, 0);
-      controls.update();
-
-      // Ground grid helper
-      const gridSize = Math.max(10, Math.ceil(maxDim * 2.5));
-      const grid = new THREE.GridHelper(gridSize, 20, 0x3b82f6, 0x27272a);
-      grid.position.y = -size.y / 2;
-      scene.add(grid);
-      gridHelperRef.current = grid;
-
-      // Count vertices and triangles
+    const setupModel = (object: THREE.Object3D, animations?: THREE.AnimationClip[]) => {
+      // 1. Process all child meshes, compute geometry normals/bounds, apply double-sided materials,
+      // and fix FBX zero-opacity and black material bugs
       let totalVertices = 0;
       let totalTriangles = 0;
+
       object.traverse((child) => {
-        if ((child as THREE.Mesh).isMesh) {
+        if ((child as any).isMesh) {
           const m = child as THREE.Mesh;
+          // Disable frustum culling: prevents skinned meshes or offset meshes from vanishing
+          m.frustumCulled = false;
+          m.castShadow = true;
+          m.receiveShadow = true;
+
           const geom = m.geometry;
           if (geom) {
+            if (!geom.attributes.normal) {
+              geom.computeVertexNormals();
+            }
+            if (!geom.boundingBox) {
+              geom.computeBoundingBox();
+            }
             totalVertices += geom.attributes.position ? geom.attributes.position.count : 0;
             if (geom.index) {
               totalTriangles += geom.index.count / 3;
@@ -463,10 +676,152 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
               totalTriangles += geom.attributes.position.count / 3;
             }
           }
+
+          const fixMat = (mat: any) => {
+            if (!mat) return;
+            // Double-sided rendering ensures geometry is visible regardless of face winding/normal inversion
+            mat.side = THREE.DoubleSide;
+
+            // Fix FBX TransparencyFactor = 1.0 bug causing opacity = 0.0 (completely invisible mesh)
+            if (mat.opacity !== undefined && mat.opacity < 0.05) {
+              mat.opacity = 1.0;
+              mat.transparent = false;
+            }
+
+            // If transparent is true but opacity is ~1.0 with no alpha map, disable transparency
+            // to avoid depth sorting issues
+            if (mat.transparent && (!mat.opacity || mat.opacity >= 0.99) && !mat.alphaMap) {
+              if (!mat.map) {
+                mat.transparent = false;
+              }
+            }
+
+            mat.depthWrite = true;
+            mat.depthTest = true;
+
+            // Fix pitch-black diffuse color bug when textures fail or in untextured FBX exports
+            if (mat.color && mat.color.r === 0 && mat.color.g === 0 && mat.color.b === 0 && !mat.map) {
+              mat.color.setHex(0xb0b8c4);
+            }
+
+            // Ensure FBX materials (e.g. MeshPhongMaterial / MeshLambertMaterial) have specular and shininess
+            if ((mat as any).isMeshPhongMaterial) {
+              const phong = mat as THREE.MeshPhongMaterial;
+              if (phong.shininess === 0 || phong.shininess === undefined) {
+                phong.shininess = 25;
+              }
+              if (phong.specular && phong.specular.r === 0 && phong.specular.g === 0 && phong.specular.b === 0) {
+                phong.specular.setHex(0x222222);
+              }
+            }
+
+            if ('wireframe' in mat) {
+              mat.wireframe = wireframe;
+            }
+
+            mat.needsUpdate = true;
+          };
+
+          if (Array.isArray(m.material)) {
+            m.material.forEach(fixMat);
+          } else if (m.material) {
+            fixMat(m.material);
+          } else {
+            m.material = new THREE.MeshStandardMaterial({
+              color: 0x93c5fd,
+              roughness: 0.4,
+              metalness: 0.2,
+              side: THREE.DoubleSide,
+              wireframe,
+            });
+          }
         }
       });
+
       setStats({ vertices: totalVertices, triangles: Math.round(totalTriangles) });
+
+      // 2. Compute accurate bounding box
+      object.updateMatrixWorld(true);
+      const box = new THREE.Box3();
+      box.setFromObject(object);
+
+      if (box.isEmpty() || !isFinite(box.min.x) || !isFinite(box.max.x)) {
+        // Fallback: compute bounding box directly from mesh geometries
+        object.traverse((child: any) => {
+          if (child.isMesh && child.geometry?.boundingBox) {
+            const meshBox = child.geometry.boundingBox.clone();
+            meshBox.applyMatrix4(child.matrixWorld);
+            box.union(meshBox);
+          }
+        });
+      }
+
+      if (box.isEmpty() || !isFinite(box.min.x) || !isFinite(box.max.x)) {
+        box.set(new THREE.Vector3(-1, -1, -1), new THREE.Vector3(1, 1, 1));
+      }
+
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+      const maxDim = Math.max(size.x, size.y, size.z);
+
+      // 3. Normalize scale so ANY model size (from millimeters to meters to kilometers)
+      // fits into viewer bounds cleanly without camera clipping or light distance issues
+      const TARGET_SIZE = 3.5;
+      const scale = (maxDim > 0 && isFinite(maxDim)) ? (TARGET_SIZE / maxDim) : 1;
+      object.scale.set(scale, scale, scale);
+
+      // Center the object at origin (0, 0, 0)
+      object.position.set(-center.x * scale, -center.y * scale, -center.z * scale);
+      object.updateMatrixWorld(true);
+
+      scene.add(object);
+      modelRootRef.current = object;
+
+      // 4. Start animation if model contains animations
+      if (animations && animations.length > 0) {
+        try {
+          const mixer = new THREE.AnimationMixer(object);
+          mixer.clipAction(animations[0]).play();
+          mixerRef.current = mixer;
+        } catch (err) {
+          console.warn('[ThreeViewer] Animation mixer init error:', err);
+        }
+      }
+
+      // 5. Camera & OrbitControls setup
+      camera.position.set(3.0, 2.2, 4.0);
+      camera.near = 0.05;
+      camera.far = 1000;
+      camera.updateProjectionMatrix();
+
+      controls.target.set(0, 0, 0);
+      controls.update();
+
+      // 6. Ground grid helper
+      const grid = new THREE.GridHelper(10, 20, 0x3b82f6, 0x27272a);
+      grid.position.y = -(size.y * scale) / 2;
+      scene.add(grid);
+      gridHelperRef.current = grid;
+
       setLoading(false);
+
+      // Auto-save rendered 3D preview to central thumbnail cache
+      setTimeout(() => {
+        try {
+          const api = (window as any).api;
+          if (rendererRef.current && sceneRef.current && cameraRef.current && api?.saveThumbnailCache) {
+            rendererRef.current.render(sceneRef.current, cameraRef.current);
+            const dataUrl = rendererRef.current.domElement.toDataURL('image/jpeg', 0.88);
+            if (dataUrl && dataUrl.length > 200) {
+              api.saveThumbnailCache(filePath, dataUrl).then((ok: boolean) => {
+                if (ok) {
+                  window.dispatchEvent(new CustomEvent('jabro-thumbnail-saved', { detail: { filePath } }));
+                }
+              }).catch(() => {});
+            }
+          }
+        } catch {}
+      }, 700);
     };
 
     // Progress and error handlers
@@ -484,7 +839,7 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
 
     if (ext === 'gltf' || ext === 'glb') {
       const loader = new GLTFLoader();
-      loader.load(mediaUrl, (gltf) => setupModel(gltf.scene), onProgress, onError);
+      loader.load(mediaUrl, (gltf) => setupModel(gltf.scene, gltf.animations), onProgress, onError);
     } else if (ext === 'obj') {
       const loader = new OBJLoader();
       loader.load(mediaUrl, (obj) => setupModel(obj), onProgress, onError);
@@ -537,14 +892,65 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
         onProgress,
         onError
       );
+    } else if (ext === 'fbx') {
+      const loadingManager = new THREE.LoadingManager();
+      const lastSlash = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
+      const dirPath = lastSlash !== -1 ? filePath.substring(0, lastSlash + 1) : '';
+
+      loadingManager.setURLModifier((url: string) => {
+        if (!url) return url;
+        // Never modify already resolved or standard schemes (media protocol, data URLs, blobs, or web links)
+        if (
+          url.startsWith('data:') ||
+          url.startsWith('blob:') ||
+          url.startsWith('jabro-media:') ||
+          url.startsWith('http:') ||
+          url.startsWith('https:')
+        ) {
+          return url;
+        }
+
+        // Relative texture or local path embedded in FBX
+        let clean = url.replace(/\\/g, '/');
+        clean = clean.split('?')[0].split('#')[0];
+        const filename = clean.split('/').filter(Boolean).pop() || '';
+        if (filename && dirPath) {
+          return `jabro-media://localhost?path=${encodeURIComponent(dirPath + filename)}`;
+        }
+        return url;
+      });
+
+      loadingManager.onError = (itemUrl) => {
+        console.warn('[ThreeViewer] FBX texture/resource load warning (non-fatal):', itemUrl);
+      };
+
+      const loader = new FBXLoader(loadingManager);
+      loader.load(
+        mediaUrl,
+        (obj) => {
+          setupModel(obj, obj.animations);
+        },
+        onProgress,
+        onError
+      );
     } else {
       setErrorMessage(`Unsupported 3D format: .${ext}`);
       setLoading(false);
     }
 
     // Animation Loop
+    const clock = new THREE.Clock();
     const animate = () => {
       animFrameIdRef.current = requestAnimationFrame(animate);
+      const delta = clock.getDelta();
+      if (mixerRef.current) {
+        try {
+          mixerRef.current.update(delta);
+        } catch (err) {
+          console.warn('[ThreeViewer] Mixer update error:', err);
+          mixerRef.current = null;
+        }
+      }
       if (controlsRef.current) {
         controlsRef.current.update();
       }
@@ -569,10 +975,14 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
     return () => {
       window.removeEventListener('resize', handleResize);
       if (animFrameIdRef.current) cancelAnimationFrame(animFrameIdRef.current);
+      if (mixerRef.current) {
+        mixerRef.current.stopAllAction();
+        mixerRef.current = null;
+      }
       renderer.dispose();
       scene.clear();
     };
-  }, [ext, fileName, mediaUrl]);
+  }, [ext, fileName, mediaUrl, filePath]);
 
   // Mount active renderer depending on renderMode
   useEffect(() => {
@@ -587,6 +997,12 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
             splatViewerRef.current.dispose();
           } catch {}
           splatViewerRef.current = null;
+        }
+        if (splatRendererRef.current) {
+          try {
+            splatRendererRef.current.dispose();
+          } catch {}
+          splatRendererRef.current = null;
         }
       };
     } else {
@@ -736,15 +1152,135 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
           </button>
         )}
 
-        {/* Stage Background Preset Toggle */}
-        <button
-          onClick={cycleBgPreset}
-          className="flex items-center gap-1 px-2 py-1 rounded hover:bg-zinc-700 text-zinc-300 hover:text-white transition cursor-pointer"
-          title={`Switch stage background preset (Current: ${BG_CONFIG[bgPreset].label})`}
-        >
-          <Palette size={13} />
-          <span>{BG_CONFIG[bgPreset].label}</span>
-        </button>
+        {/* Stage Background Preset Menu */}
+        <div className="relative" ref={bgMenuRef}>
+          <button
+            onClick={() => {
+              setShowBgMenu(prev => !prev);
+              setShowLightMenu(false);
+            }}
+            className="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-zinc-700 text-zinc-300 hover:text-white transition cursor-pointer"
+            title={`Stage Background: ${BG_CONFIG[bgPreset].label} (Click to change)`}
+          >
+            <Palette size={13} className="text-zinc-400" />
+            <span 
+              className="w-2.5 h-2.5 rounded-full border border-zinc-600 inline-block shadow-xs flex-shrink-0" 
+              style={{ backgroundColor: BG_CONFIG[bgPreset].hex }}
+            />
+            <span>{BG_CONFIG[bgPreset].label}</span>
+            <ChevronDown size={11} className={`text-zinc-400 transition-transform ${showBgMenu ? 'rotate-180' : ''}`} />
+          </button>
+
+          {showBgMenu && (
+            <div className="absolute top-full left-0 mt-1.5 w-48 bg-[#18181b]/95 backdrop-blur-md rounded-lg border border-zinc-700/80 shadow-2xl p-1.5 z-50 flex flex-col gap-0.5 animate-in fade-in zoom-in-95 duration-100">
+              <div className="px-2 py-1 text-[10px] font-semibold tracking-wider uppercase text-zinc-400 border-b border-zinc-800 mb-1">
+                Background Presets
+              </div>
+              {(Object.keys(BG_CONFIG) as BgPreset[]).map((key) => {
+                const conf = BG_CONFIG[key];
+                const isSelected = bgPreset === key;
+                return (
+                  <button
+                    key={key}
+                    onClick={() => {
+                      setBgPreset(key);
+                      setShowBgMenu(false);
+                    }}
+                    className={`flex items-center justify-between px-2 py-1.5 rounded text-xs transition cursor-pointer text-left ${
+                      isSelected
+                        ? 'bg-blue-600/20 text-blue-300 font-medium'
+                        : 'text-zinc-300 hover:bg-zinc-800 hover:text-white'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="w-3 h-3 rounded-full border border-zinc-500 shadow-xs flex-shrink-0"
+                        style={{ backgroundColor: conf.hex }}
+                      />
+                      <span>{conf.label}</span>
+                    </div>
+                    {isSelected && <Check size={12} className="text-blue-400" />}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Lighting Rig Menu (for 3D models) */}
+        {renderMode === 'mesh' && (
+          <div className="relative" ref={lightMenuRef}>
+            <button
+              onClick={() => {
+                setShowLightMenu(prev => !prev);
+                setShowBgMenu(false);
+              }}
+              className="flex items-center gap-1.5 px-2 py-1 rounded hover:bg-zinc-700 text-zinc-300 hover:text-white transition cursor-pointer"
+              title={`Lighting: ${LIGHT_CONFIGS[lightPreset].label} @ ${lightIntensity}x (Click to change)`}
+            >
+              <Sun size={13} className="text-amber-400" />
+              <span>{LIGHT_CONFIGS[lightPreset].label}</span>
+              <span className="text-[10px] font-mono text-zinc-400 bg-zinc-800/90 px-1 rounded border border-zinc-700/40">
+                {lightIntensity}x
+              </span>
+              <ChevronDown size={11} className={`text-zinc-400 transition-transform ${showLightMenu ? 'rotate-180' : ''}`} />
+            </button>
+
+            {showLightMenu && (
+              <div className="absolute top-full left-0 mt-1.5 w-60 bg-[#18181b]/95 backdrop-blur-md rounded-lg border border-zinc-700/80 shadow-2xl p-2 z-50 flex flex-col gap-1 animate-in fade-in zoom-in-95 duration-100">
+                <div className="flex items-center justify-between px-1 text-[10px] font-semibold tracking-wider uppercase text-zinc-400 border-b border-zinc-800 pb-1 mb-1">
+                  <span>Lighting Rig</span>
+                  <span className="text-amber-400 font-normal">Live 3D</span>
+                </div>
+
+                <div className="flex flex-col gap-0.5">
+                  {(Object.keys(LIGHT_CONFIGS) as LightPreset[]).map((key) => {
+                    const conf = LIGHT_CONFIGS[key];
+                    const isSelected = lightPreset === key;
+                    return (
+                      <button
+                        key={key}
+                        onClick={() => {
+                          setLightPreset(key);
+                        }}
+                        className={`flex flex-col px-2 py-1.5 rounded text-left transition cursor-pointer ${
+                          isSelected
+                            ? 'bg-amber-500/20 text-amber-200'
+                            : 'text-zinc-300 hover:bg-zinc-800 hover:text-white'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium text-xs">{conf.label}</span>
+                          {isSelected && <Check size={12} className="text-amber-400" />}
+                        </div>
+                        <span className="text-[10px] text-zinc-400 truncate mt-0.5">{conf.description}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-1 pt-1.5 border-t border-zinc-800 flex items-center justify-between px-1">
+                  <span className="text-[11px] text-zinc-400">Intensity</span>
+                  <div className="flex items-center gap-1 bg-zinc-800/80 rounded p-0.5 border border-zinc-700/50">
+                    {[0.6, 1.0, 1.5, 2.0].map((val) => (
+                      <button
+                        key={val}
+                        onClick={() => setLightIntensity(val)}
+                        className={`px-1.5 py-0.5 rounded text-[10px] font-mono cursor-pointer transition ${
+                          lightIntensity === val
+                            ? 'bg-amber-500 text-black font-bold'
+                            : 'text-zinc-400 hover:text-zinc-200'
+                        }`}
+                      >
+                        {val}x
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* High-Resolution Snapshot Capture */}
         <button

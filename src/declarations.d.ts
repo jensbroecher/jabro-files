@@ -6,6 +6,12 @@ declare module '@mkkellogg/gaussian-splats-3d' {
     Spz = 3,
   }
 
+  export enum SceneRevealMode {
+    Default = 0,
+    Gradual = 1,
+    Instant = 2,
+  }
+
   export interface ViewerOptions {
     rootElement?: HTMLElement;
     cameraUp?: [number, number, number];

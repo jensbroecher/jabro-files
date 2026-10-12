@@ -128,6 +128,28 @@ const api = {
     return (file as any).path || '';
   },
 
+  // Central Thumbnail Cache & Previews
+  getThumbnail: (filePath: string, mtime: string, size?: number): Promise<{ url?: string; hasPreview: boolean }> =>
+    ipcRenderer.invoke('get-thumbnail', { filePath, mtime, size }),
+
+  getThumbnailsBatch: (items: Array<{ filePath: string; mtime: string; size?: number }>): Promise<Record<string, string>> =>
+    ipcRenderer.invoke('get-thumbnails-batch', items),
+
+  readFileSnippet: (filePath: string, maxChars?: number): Promise<string> =>
+    ipcRenderer.invoke('read-file-snippet', filePath, maxChars),
+
+  getThumbnailCacheStats: (): Promise<{ count: number; sizeBytes: number; cachePath: string }> =>
+    ipcRenderer.invoke('get-thumbnail-cache-stats'),
+
+  clearThumbnailCache: (): Promise<{ success: boolean; count: number; clearedBytes: number }> =>
+    ipcRenderer.invoke('clear-thumbnail-cache'),
+
+  openThumbnailCacheFolder: (): Promise<void> =>
+    ipcRenderer.invoke('open-thumbnail-cache-folder'),
+
+  saveThumbnailCache: (filePath: string, dataUrl: string, mtime?: string, size?: number): Promise<boolean> =>
+    ipcRenderer.invoke('save-thumbnail-cache', { filePath, dataUrl, mtime, size }),
+
   // Optional: platform info
   platform: process.platform,
 };
