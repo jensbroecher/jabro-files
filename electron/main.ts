@@ -1526,7 +1526,17 @@ ipcMain.handle('get-thumbnail', async (_e, { filePath, mtime, size }: { filePath
     return { hasPreview: false };
   }
 
-  const cacheKey = getThumbnailCacheKey(filePath, mtime, size);
+  let statMtime = mtime;
+  let statSize = size;
+  if (!statMtime || statSize === undefined || statSize === 0) {
+    try {
+      const st = await fs.stat(filePath);
+      statMtime = st.mtime.toISOString();
+      statSize = st.size;
+    } catch {}
+  }
+
+  const cacheKey = getThumbnailCacheKey(filePath, statMtime, statSize);
   const cachedPath = path.join(THUMBNAIL_CACHE_DIR, `${cacheKey}.jpg`);
 
   // Fast disk check

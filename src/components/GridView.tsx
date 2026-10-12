@@ -137,7 +137,10 @@ export const GridView: React.FC<GridViewProps> = ({
     const handleThumbSaved = (e: any) => {
       const savedPath = e?.detail?.filePath;
       if (savedPath && api?.getThumbnail) {
-        api.getThumbnail(savedPath, '', 0).then((res: any) => {
+        const entry = entriesMapRef.current.get(savedPath);
+        const mtime = e?.detail?.mtime || entry?.mtime || '';
+        const size = e?.detail?.size ?? entry?.size ?? 0;
+        api.getThumbnail(savedPath, mtime, size).then((res: any) => {
           if (res?.hasPreview && res.url) {
             setThumbnails(prev => ({ ...prev, [savedPath]: res.url }));
             setNoPreviewSet(prev => {

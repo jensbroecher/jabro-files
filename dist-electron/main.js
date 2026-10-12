@@ -877,12 +877,17 @@ r.handle("get-thumbnail", async (e, { filePath: t, mtime: n, size: r }) => {
 	if (!t) return { hasPreview: !1 };
 	let i = l.extname(t).toLowerCase();
 	if (!V.has(i)) return { hasPreview: !1 };
-	let a = H(t, n, r), o = l.join(B, `${a}.jpg`);
-	return d.existsSync(o) ? {
-		url: U(o),
+	let a = n, o = r;
+	if (!a || o === void 0 || o === 0) try {
+		let e = await u.stat(t);
+		a = e.mtime.toISOString(), o = e.size;
+	} catch {}
+	let s = H(t, a, o), c = l.join(B, `${s}.jpg`);
+	return d.existsSync(c) ? {
+		url: U(c),
 		hasPreview: !0
-	} : W.enqueue(a, async () => d.existsSync(o) || await G(t, o, i) ? {
-		url: U(o),
+	} : W.enqueue(s, async () => d.existsSync(c) || await G(t, c, i) ? {
+		url: U(c),
 		hasPreview: !0
 	} : { hasPreview: !1 });
 }), r.handle("get-thumbnails-batch", async (e, t) => {
