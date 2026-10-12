@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { ThreeViewer } from './components/ThreeViewer';
 import { GridView } from './components/GridView';
+import { Background3DSnapshotGenerator } from './components/Background3DSnapshotGenerator';
 
 interface ToastInfo {
   id: string;
@@ -449,6 +450,18 @@ export default function App() {
 
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [operationStatus, setOperationStatus] = useState('');
+  const [bgActivity, setBgActivity] = useState<{ active: boolean; text?: string; subtext?: string } | null>(null);
+
+  useEffect(() => {
+    const handleBgActivity = (e: any) => {
+      if (e?.detail) {
+        setBgActivity(e.detail.active ? e.detail : null);
+      }
+    };
+    window.addEventListener('jabro-bg-activity', handleBgActivity);
+    return () => window.removeEventListener('jabro-bg-activity', handleBgActivity);
+  }, []);
+
   const [viewer, setViewer] = useState<null | { type: 'image' | 'audio' | 'video' | 'text' | 'pdf' | '3d' | 'gaussian-splat'; path: string; name: string }>(null);
   const [textContent, setTextContent] = useState<string | null>(null);
 
@@ -1958,14 +1971,21 @@ export default function App() {
       </div>
 
       {/* Browser-style Multi-Tabs Bar */}
-      <div className="flex items-center px-2 pt-1.5 bg-[#141416] border-b border-zinc-800 gap-1 overflow-x-auto select-none no-scrollbar">
+      <div 
+        className="flex items-center px-2 pt-1 h-9 box-border bg-[#141416] border-b border-zinc-800 gap-1 overflow-x-auto overflow-y-hidden select-none no-scrollbar flex-shrink-0"
+        onWheel={(e) => {
+          if (e.deltaY !== 0) {
+            e.currentTarget.scrollLeft += e.deltaY;
+          }
+        }}
+      >
         {tabs.map((tab) => {
           const isActive = tab.id === activeTabId;
           return (
             <div
               key={tab.id}
               onClick={() => switchTab(tab)}
-              className={`group flex items-center gap-2 px-3 py-1.5 rounded-t-lg text-xs cursor-pointer border-t border-x transition-all duration-150 max-w-[200px] min-w-[110px] ${
+              className={`group flex items-center gap-2 px-3 py-1 h-[29px] box-border rounded-t-lg text-xs cursor-pointer border-t border-x transition-all duration-150 max-w-[200px] min-w-[110px] ${
                 isActive
                   ? 'bg-[#111113] border-zinc-700/80 text-white font-semibold shadow-xs -mb-[1px] border-b-transparent'
                   : 'bg-zinc-900/40 border-transparent text-zinc-400 hover:bg-zinc-800/50 hover:text-zinc-200'
@@ -1988,7 +2008,7 @@ export default function App() {
         })}
         <button
           onClick={addNewTab}
-          className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-white transition ml-0.5 cursor-pointer"
+          className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-white transition ml-0.5 cursor-pointer flex-shrink-0"
           title="Open New Tab (Ctrl+T)"
         >
           <Plus size={14} />
@@ -1996,28 +2016,54 @@ export default function App() {
       </div>
 
       {/* Path bar with interactive breadcrumbs and text edit toggle */}
-      <div className="flex items-center gap-2 px-3 py-1.5 bg-[#111113] border-b border-zinc-800">
+      <div className="flex items-center gap-2 px-3 h-10 box-border bg-[#111113] border-b border-zinc-800 flex-shrink-0">
         {isEditingPath ? (
-          <input
-            className="path-bar flex-1 px-3 py-1 text-[13px] bg-zinc-900 border border-blue-500/50 rounded outline-none"
-            autoFocus
-            value={pathInputValue}
-            onChange={(e) => setPathInputValue(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                activeNavigate(pathInputValue);
-                setIsEditingPath(false);
-              } else if (e.key === 'Escape') {
-                setPathInputValue(activeCurrentPath);
-                setIsEditingPath(false);
-              }
-            }}
-            onBlur={() => setIsEditingPath(false)}
-            spellCheck={false}
-          />
+          <div className="flex items-center flex-1 min-w-0 h-8 box-border bg-zinc-900 border border-blue-500/70 rounded px-2.5">
+            <input
+              className="flex-1 h-full bg-transparent text-[13px] font-mono text-zinc-200 outline-none leading-none placeholder:text-zinc-600"
+              autoFocus
+              value={pathInputValue}
+              onChange={(e) => setPathInputValue(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  activeNavigate(pathInputValue);
+                  setIsEditingPath(false);
+                } else if (e.key === 'Escape') {
+                  setPathInputValue(activeCurrentPath);
+                  setIsEditingPath(false);
+                }
+              }}
+              onBlur={() => setIsEditingPath(false)}
+              spellCheck={false}
+            />
+            <div className="flex items-center gap-0.5 ml-1.5 flex-shrink-0">
+              <button
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  activeNavigate(pathInputValue);
+                  setIsEditingPath(false);
+                }}
+                className="p-1 rounded hover:bg-zinc-800 text-blue-400 hover:text-blue-300 cursor-pointer"
+                title="Navigate (Enter)"
+              >
+                <ArrowRight size={13} />
+              </button>
+              <button
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  navigator.clipboard.writeText(pathInputValue);
+                  showToast({ type: 'info', title: 'Path Copied', message: pathInputValue }, 2000);
+                }}
+                className="p-1 rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 cursor-pointer"
+                title="Copy path"
+              >
+                <Copy size={13} />
+              </button>
+            </div>
+          </div>
         ) : (
-          <div className="flex items-center flex-1 min-w-0 bg-zinc-900/60 border border-zinc-800/80 rounded px-2 py-0.5">
-            <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5">
+          <div className="flex items-center flex-1 min-w-0 h-8 box-border bg-zinc-900/60 border border-zinc-800/80 rounded px-2.5 hover:border-zinc-700/80 transition-colors">
+            <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5 max-w-full">
               {parseBreadcrumbs(activeCurrentPath).map((b, idx, arr) => {
                 const isDrive = /^[a-zA-Z]:$/i.test(b.name);
                 const driveMatch = isDrive ? drives.find(d => d.name.toUpperCase() === b.name.toUpperCase()) : null;
@@ -2044,14 +2090,20 @@ export default function App() {
             </div>
             {/* Click empty space to edit as text */}
             <div
-              className="flex-1 h-full min-h-[24px] cursor-text"
-              onClick={() => setIsEditingPath(true)}
+              className="flex-1 h-full min-h-[20px] cursor-text"
+              onClick={() => {
+                setPathInputValue(activeCurrentPath);
+                setIsEditingPath(true);
+              }}
               title="Click to edit path as text"
             />
             {/* Action buttons */}
-            <div className="flex items-center gap-0.5 ml-1">
+            <div className="flex items-center gap-0.5 ml-1.5 flex-shrink-0">
               <button
-                onClick={() => setIsEditingPath(true)}
+                onClick={() => {
+                  setPathInputValue(activeCurrentPath);
+                  setIsEditingPath(true);
+                }}
                 className="p-1 rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 cursor-pointer"
                 title="Edit path as text (Ctrl+L)"
               >
@@ -2089,91 +2141,131 @@ export default function App() {
           <>
             <div 
               style={{ width: `${sidebarWidth}px`, minWidth: `${sidebarWidth}px`, maxWidth: `${sidebarWidth}px` }}
-              className="bg-[#111113] overflow-y-auto overflow-x-hidden flex flex-col text-sm select-none flex-shrink-0"
+              className="bg-[#111113] flex flex-col text-sm select-none flex-shrink-0 h-full overflow-hidden"
             >
-              <div className="px-3 pt-3 pb-1 text-[10px] font-semibold tracking-wider text-zinc-500 flex items-center justify-between">
-                <span>QUICK ACCESS</span>
-                <div className="flex items-center gap-1">
-                  <button
-                    onClick={addFolderToQuickAccess}
-                    className="text-blue-400 hover:text-blue-300 text-lg leading-none px-1"
-                    title="Pin a folder to Quick Access"
-                  >
-                    +
-                  </button>
-                  <button
-                    onClick={toggleSidebar}
-                    className="text-zinc-500 hover:text-zinc-300 p-0.5 rounded transition cursor-pointer"
-                    title="Collapse sidebar (Ctrl+B)"
-                  >
-                    <PanelLeftClose size={13} />
-                  </button>
-                </div>
-              </div>
-              {quickAccess.map(item => (
-                <div
-                  key={item.path}
-                  onClick={() => activeNavigate(item.path)}
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    if (window.confirm(`Remove "${item.label}" from Quick Access?`)) {
-                      removeFromQuickAccess(item.path);
-                    }
-                  }}
-                  onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
-                  onDrop={(e) => handleDropToPath(e, item.path)}
-                  className={`mx-1.5 px-2.5 py-1 rounded flex items-center gap-2 cursor-pointer ${(activePaneIsRight ? rightCurrentPath : currentPath) === item.path ? 'bg-zinc-800' : 'hover:bg-zinc-900'}`}
-                  title={item.path}
-                >
-                  <Folder size={15} className="text-blue-400 flex-shrink-0" />
-                  <span className="truncate">{item.label}</span>
-                </div>
-              ))}
-
-              <div className="px-3 pt-4 pb-1 text-[10px] font-semibold tracking-wider text-zinc-500">THIS PC</div>
-              {drives.length > 0 ? drives.map(d => {
-                const driveHoverLabel = d.label ? `${d.label} (${d.name})` : d.name;
-                const driveTooltip = d.size != null && d.freeSpace != null 
-                  ? `${driveHoverLabel} • ${d.path} • ${formatSize(d.freeSpace)} free of ${formatSize(d.size)}`
-                  : `${driveHoverLabel} • ${d.path}`;
-
-                return (
-                  <div
-                    key={d.path}
-                    onClick={() => activeNavigate(d.path)}
-                    onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); showDriveCtx(e, d); }}
-                    onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
-                    onDrop={(e) => handleDropToPath(e, d.path)}
-                    className={`mx-1.5 px-2.5 py-1 rounded flex items-center gap-2 cursor-pointer ${(activePaneIsRight ? rightCurrentPath : currentPath).startsWith(d.path) ? 'bg-zinc-800' : 'hover:bg-zinc-900'}`}
-                    title={driveTooltip}
-                  >
-                    <HardDrive size={15} className="text-emerald-400 flex-shrink-0" />
-                    <span 
-                      className="flex-1 min-w-0 truncate"
-                      title={driveHoverLabel}
+              {/* Scrollable Upper Area (Quick Access & Drives) */}
+              <div className="flex-1 overflow-y-auto overflow-x-hidden flex flex-col">
+                <div className="px-3 pt-3 pb-1 text-[10px] font-semibold tracking-wider text-zinc-500 flex items-center justify-between">
+                  <span>QUICK ACCESS</span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={addFolderToQuickAccess}
+                      className="text-blue-400 hover:text-blue-300 text-lg leading-none px-1"
+                      title="Pin a folder to Quick Access"
                     >
-                      <span className="font-semibold text-zinc-200" title={driveHoverLabel}>{d.name}</span>
-                      {d.label && <span className="ml-1 text-zinc-400" title={driveHoverLabel}>({d.label})</span>}
-                    </span>
-                    {d.size != null && d.freeSpace != null && (
-                      <span className="text-[10px] text-zinc-500 flex-shrink-0 ml-1 whitespace-nowrap" title={driveTooltip}>
-                        ({formatSize(d.freeSpace)} free of {formatSize(d.size)})
+                      +
+                    </button>
+                    <button
+                      onClick={toggleSidebar}
+                      className="text-zinc-500 hover:text-zinc-300 p-0.5 rounded transition cursor-pointer"
+                      title="Collapse sidebar (Ctrl+B)"
+                    >
+                      <PanelLeftClose size={13} />
+                    </button>
+                  </div>
+                </div>
+                {quickAccess.map(item => (
+                  <div
+                    key={item.path}
+                    onClick={() => activeNavigate(item.path)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      if (window.confirm(`Remove "${item.label}" from Quick Access?`)) {
+                        removeFromQuickAccess(item.path);
+                      }
+                    }}
+                    onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
+                    onDrop={(e) => handleDropToPath(e, item.path)}
+                    className={`mx-1.5 px-2.5 py-1 rounded flex items-center gap-2 cursor-pointer ${(activePaneIsRight ? rightCurrentPath : currentPath) === item.path ? 'bg-zinc-800' : 'hover:bg-zinc-900'}`}
+                    title={item.path}
+                  >
+                    <Folder size={15} className="text-blue-400 flex-shrink-0" />
+                    <span className="truncate">{item.label}</span>
+                  </div>
+                ))}
+
+                <div className="px-3 pt-4 pb-1 text-[10px] font-semibold tracking-wider text-zinc-500">THIS PC</div>
+                {drives.length > 0 ? drives.map(d => {
+                  const driveHoverLabel = d.label ? `${d.label} (${d.name})` : d.name;
+                  const driveTooltip = d.size != null && d.freeSpace != null 
+                    ? `${driveHoverLabel} • ${d.path} • ${formatSize(d.freeSpace)} free of ${formatSize(d.size)}`
+                    : `${driveHoverLabel} • ${d.path}`;
+
+                  return (
+                    <div
+                      key={d.path}
+                      onClick={() => activeNavigate(d.path)}
+                      onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); showDriveCtx(e, d); }}
+                      onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
+                      onDrop={(e) => handleDropToPath(e, d.path)}
+                      className={`mx-1.5 px-2.5 py-1 rounded flex items-center gap-2 cursor-pointer ${(activePaneIsRight ? rightCurrentPath : currentPath).startsWith(d.path) ? 'bg-zinc-800' : 'hover:bg-zinc-900'}`}
+                      title={driveTooltip}
+                    >
+                      <HardDrive size={15} className="text-emerald-400 flex-shrink-0" />
+                      <span 
+                        className="flex-1 min-w-0 truncate"
+                        title={driveHoverLabel}
+                      >
+                        <span className="font-semibold text-zinc-200" title={driveHoverLabel}>{d.name}</span>
+                        {d.label && <span className="ml-1 text-zinc-400" title={driveHoverLabel}>({d.label})</span>}
                       </span>
+                      {d.size != null && d.freeSpace != null && (
+                        <span className="text-[10px] text-zinc-500 flex-shrink-0 ml-1 whitespace-nowrap" title={driveTooltip}>
+                          ({formatSize(d.freeSpace)} free of {formatSize(d.size)})
+                        </span>
+                      )}
+                    </div>
+                  );
+                }) : (
+                  <div className="mx-1.5 px-2.5 py-1 text-zinc-500 text-xs">No drives detected</div>
+                )}
+
+                <div className="flex-1" />
+              </div>
+
+              {/* Bottom Left Panel - Activity & Status */}
+              <div className="border-t border-zinc-800/80 bg-zinc-950/70 p-2.5 flex flex-col gap-1.5 flex-shrink-0">
+                <div className="flex items-center justify-between text-[10px] font-semibold tracking-wider text-zinc-500 uppercase">
+                  <span>Background Tasks</span>
+                  {bgActivity?.active ? (
+                    <span className="flex items-center gap-1 text-blue-400 normal-case font-medium">
+                      <Loader2 size={11} className="animate-spin text-blue-400" />
+                      <span>Active</span>
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-emerald-400/80 normal-case font-medium">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                      <span>Idle</span>
+                    </span>
+                  )}
+                </div>
+
+                {bgActivity?.active ? (
+                  <div className="bg-zinc-900/90 rounded border border-blue-500/30 p-2 flex flex-col gap-1 shadow-sm">
+                    <div className="flex items-center gap-1.5 text-zinc-200 text-xs font-medium">
+                      <Loader2 size={12} className="animate-spin text-blue-400 shrink-0" />
+                      <span className="truncate">{bgActivity.text || 'Generating 3D preview...'}</span>
+                    </div>
+                    {bgActivity.subtext && (
+                      <div className="text-[10px] text-zinc-400 font-mono truncate pl-4" title={bgActivity.subtext}>
+                        {bgActivity.subtext}
+                      </div>
                     )}
                   </div>
-                );
-              }) : (
-                <div className="mx-1.5 px-2.5 py-1 text-zinc-500 text-xs">No drives detected</div>
-              )}
-
-              <div className="flex-1" />
+                ) : (
+                  <div className="text-[11px] text-zinc-500 py-0.5 px-0.5 flex items-center justify-between">
+                    <span>3D previews ready</span>
+                    <Box size={12} className="text-zinc-600" />
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Sidebar Resize Handle */}
             <div
               onMouseDown={handleSidebarResizeStart}
               onDoubleClick={handleResetSidebarWidth}
-              className="w-1 hover:w-1.5 active:w-1.5 bg-zinc-800/80 hover:bg-blue-500 active:bg-blue-500 transition-colors cursor-col-resize flex-shrink-0 select-none z-10"
+              className="relative w-1 bg-zinc-800/80 hover:bg-blue-500 active:bg-blue-600 transition-colors cursor-col-resize flex-shrink-0 select-none z-10 before:absolute before:-inset-x-1.5 before:top-0 before:bottom-0 before:content-['']"
               title="Drag to resize sidebar, double-click to reset width (224px)"
             />
           </>
@@ -2650,6 +2742,13 @@ export default function App() {
           <div className="statusbar h-7 px-3 text-xs bg-[#18181b] border-t border-zinc-800 flex items-center gap-x-3 text-zinc-400">
             <div>{entries.length} items • {stats.folderCount} folders, {stats.fileCount} files</div>
             <div>Files in view: <span className="text-zinc-200">{formatSize(stats.filesTotalBytes)}</span></div>
+            {bgActivity?.active && (
+              <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-blue-950/60 border border-blue-500/30 text-blue-300 text-[11px] max-w-[320px]">
+                <Loader2 size={11} className="animate-spin text-blue-400 shrink-0" />
+                <span className="truncate font-medium">{bgActivity.text}</span>
+                {bgActivity.subtext && <span className="text-zinc-400 truncate max-w-[120px] font-mono">({bgActivity.subtext})</span>}
+              </div>
+            )}
             {clipboard && clipboard.paths.length > 0 && (
               <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-zinc-800 text-zinc-300 border border-zinc-700 text-[11px]">
                 {clipboard.isCut ? <Scissors size={12} className="text-amber-400" /> : <Copy size={12} className="text-blue-400" />}
@@ -3106,6 +3205,9 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Invisible offscreen layer for generating 3D and Splat previews in background */}
+      <Background3DSnapshotGenerator entries={dualPane ? [...entries, ...rightEntries] : entries} />
     </div>
   );
 }

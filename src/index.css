@@ -53,20 +53,33 @@ body {
 
 .path-bar {
   -webkit-app-region: no-drag;
-  flex: 1;
+  box-sizing: border-box;
+  height: 32px;
   background: #18181b;
   border: 1px solid #27272a;
   border-radius: 6px;
-  padding: 6px 12px;
+  padding: 0 10px;
   font-size: 13px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
   color: #d4d4d8;
   outline: none;
+  line-height: 30px;
 }
 
 .path-bar:focus {
   border-color: #3b82f6;
   background: #1f1f23;
+}
+
+/* Hide scrollbars utility (for tabs, breadcrumbs, etc.) */
+.no-scrollbar::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+.no-scrollbar {
+  -ms-overflow-style: none !important;
+  scrollbar-width: none !important;
 }
 
 .file-list {

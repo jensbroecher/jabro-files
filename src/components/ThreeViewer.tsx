@@ -1227,7 +1227,7 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
             </button>
 
             {showLightMenu && (
-              <div className="absolute top-full left-0 mt-1.5 w-60 bg-[#18181b]/95 backdrop-blur-md rounded-lg border border-zinc-700/80 shadow-2xl p-2 z-50 flex flex-col gap-1 animate-in fade-in zoom-in-95 duration-100">
+              <div className="absolute top-full left-0 mt-1.5 w-72 bg-[#18181b]/95 backdrop-blur-md rounded-lg border border-zinc-700/80 shadow-2xl p-2 z-50 flex flex-col gap-1 animate-in fade-in zoom-in-95 duration-100">
                 <div className="flex items-center justify-between px-1 text-[10px] font-semibold tracking-wider uppercase text-zinc-400 border-b border-zinc-800 pb-1 mb-1">
                   <span>Lighting Rig</span>
                   <span className="text-amber-400 font-normal">Live 3D</span>
@@ -1243,17 +1243,17 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
                         onClick={() => {
                           setLightPreset(key);
                         }}
-                        className={`flex flex-col px-2 py-1.5 rounded text-left transition cursor-pointer ${
+                        className={`w-full flex flex-col px-2.5 py-1.5 rounded text-left transition cursor-pointer ${
                           isSelected
                             ? 'bg-amber-500/20 text-amber-200'
                             : 'text-zinc-300 hover:bg-zinc-800 hover:text-white'
                         }`}
                       >
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium text-xs">{conf.label}</span>
-                          {isSelected && <Check size={12} className="text-amber-400" />}
+                        <div className="flex items-center justify-between w-full gap-2">
+                          <span className="font-medium text-xs truncate">{conf.label}</span>
+                          {isSelected && <Check size={13} className="text-amber-400 shrink-0 ml-auto" />}
                         </div>
-                        <span className="text-[10px] text-zinc-400 truncate mt-0.5">{conf.description}</span>
+                        <span className="text-[10px] text-zinc-400 leading-snug mt-0.5">{conf.description}</span>
                       </button>
                     );
                   })}
