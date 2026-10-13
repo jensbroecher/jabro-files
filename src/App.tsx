@@ -5,7 +5,8 @@ import {
   CheckCircle2, AlertTriangle, AlertCircle, Copy, Scissors, Clipboard, Loader2, Info,
   ShieldAlert, ShieldCheck, Box, Sparkles, FileText,
   Plus, ChevronRight, ChevronLeft, LayoutGrid, List, Flame, Edit3, ExternalLink, Eye, PieChart,
-  Database, Trash2, PanelLeft, PanelLeftClose, PanelLeftOpen
+  Database, Trash2, PanelLeft, PanelLeftClose, PanelLeftOpen, Save,
+  Columns2, Link2, Layers
 } from 'lucide-react';
 import { ThreeViewer } from './components/ThreeViewer';
 import { GridView } from './components/GridView';
@@ -325,6 +326,13 @@ export default function App() {
   const [drives, setDrives] = useState<DriveInfo[]>([]);
   const [clipboard, setClipboard] = useState<{ paths: string[]; isCut: boolean } | null>(null);
   const [dualPane, setDualPane] = useState(false);
+  const [splitMode, setSplitMode] = useState<'independent' | 'linked'>(() => {
+    try {
+      return (localStorage.getItem('jabro-split-mode') as any) || 'independent';
+    } catch {
+      return 'independent';
+    }
+  });
   const [isRightLoading, setIsRightLoading] = useState(false);
 
   // Multi-Tab browsing state
@@ -484,6 +492,7 @@ export default function App() {
     isMove: boolean;
     action?: 'copy' | 'move' | 'createFolder';
     newFolderName?: string;
+    customDestFileName?: string;
   } | null>(null);
   const [isElevating, setIsElevating] = useState(false);
 
@@ -518,6 +527,12 @@ export default function App() {
       localStorage.setItem('jabro-grid-size', gridTileSize);
     } catch {}
   }, [gridTileSize]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('jabro-split-mode', splitMode);
+    } catch {}
+  }, [splitMode]);
 
   const refreshCacheStats = useCallback(async () => {
     if (api?.getThumbnailCacheStats) {
@@ -1190,7 +1205,8 @@ export default function App() {
         elevationPrompt.target,
         elevationPrompt.isMove,
         elevationPrompt.action,
-        elevationPrompt.newFolderName
+        elevationPrompt.newFolderName,
+        elevationPrompt.customDestFileName
       );
 
       setIsElevating(false);
@@ -1452,9 +1468,17 @@ export default function App() {
     localStorage.setItem('quickAccess', JSON.stringify(newList));
   };
 
-  const openEntry = async (entry: DirEntry) => {
+  const openEntry = async (entry: DirEntry, targetPane?: 'left' | 'right') => {
+    const pane = targetPane || activePane;
     if (entry.isDirectory) {
-      navigateTo(entry.path);
+      if (dualPane && splitMode === 'independent' && pane === 'right') {
+        navigateRight(entry.path);
+      } else if (dualPane && splitMode === 'linked' && pane === 'right') {
+        navigateTo(entry.path);
+        loadRightDirectory(entry.path);
+      } else {
+        navigateTo(entry.path);
+      }
     } else {
       let vtype = getViewerType(entry.ext);
       if (vtype) {
@@ -1479,12 +1503,22 @@ export default function App() {
     }
   };
 
+  const handleLeftSelect = useCallback((path: string) => {
+    setSelected(path);
+    setActivePane('left');
+    if (dualPane && splitMode === 'linked') {
+      const ent = entries.find(e => e.path === path);
+      if (ent && ent.isDirectory) {
+        loadRightDirectory(ent.path);
+      }
+    }
+  }, [dualPane, splitMode, entries, loadRightDirectory]);
+
   // Row interactions
   const onRowClick = (entry: DirEntry) => {
-    setSelected(entry.path);
-    setActivePane('left');
+    handleLeftSelect(entry.path);
   };
-  const onRowDoubleClick = (entry: DirEntry) => openEntry(entry);
+  const onRowDoubleClick = (entry: DirEntry) => openEntry(entry, 'left');
 
   // Processed + sorted + filtered list
   const visibleEntries = useMemo(() => {
@@ -1631,6 +1665,30 @@ export default function App() {
         return;
       }
 
+      // Tab key to cycle active pane in split mode
+      if (e.key === 'Tab' && !isInput && dualPane) {
+        e.preventDefault();
+        setActivePane(prev => prev === 'left' ? 'right' : 'left');
+        return;
+      }
+
+      // Alt+Arrow navigation shortcuts
+      if (e.altKey && e.key === 'ArrowLeft' && !isInput) {
+        e.preventDefault();
+        activeGoBack();
+        return;
+      }
+      if (e.altKey && e.key === 'ArrowRight' && !isInput) {
+        e.preventDefault();
+        activeGoForward();
+        return;
+      }
+      if (e.altKey && e.key === 'ArrowUp' && !isInput) {
+        e.preventDefault();
+        activeGoUp();
+        return;
+      }
+
       if (e.key === 'Backspace' && !isInput) {
         activeGoUp();
       }
@@ -1654,12 +1712,12 @@ export default function App() {
       }
       if (e.key === 'Enter' && !activePaneIsRight && selected) {
         const ent = entries.find(x => x.path === selected);
-        if (ent) openEntry(ent);
+        if (ent) openEntry(ent, 'left');
       }
       // Also support Enter to open in the right pane when it is active
       if (e.key === 'Enter' && activePaneIsRight && rightSelected) {
         const ent = rightEntries.find(x => x.path === rightSelected);
-        if (ent) openEntry(ent);
+        if (ent) openEntry(ent, 'right');
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'c') {
         if (isInput) return;
@@ -1718,7 +1776,7 @@ export default function App() {
     let x = e.clientX;
     let y = e.clientY;
     // Flip upwards if near bottom of viewport to avoid cutoff
-    const estimatedMenuHeight = entry ? 220 : 120; // pane ctx is smaller
+    const estimatedMenuHeight = entry ? 280 : 120; // pane ctx is smaller
     if (y + estimatedMenuHeight > window.innerHeight - 8) {
       y = Math.max(8, e.clientY - estimatedMenuHeight);
     }
@@ -1822,7 +1880,53 @@ export default function App() {
 
     if (!entry) return; // row-only actions below
 
-    if (act === 'open') openEntry(entry);
+    if (act === 'save-as') {
+      try {
+        const res = await api.saveFileAs(entry.path);
+        if (res?.canceled) return;
+        if (res?.success && res.destDir && res.destFileName) {
+          showToast({
+            type: 'success',
+            title: 'File saved',
+            message: `Saved "${res.destFileName}" in ${res.destDir}`,
+          });
+          const destDirLower = res.destDir.toLowerCase();
+          if (currentPath.toLowerCase() === destDirLower) {
+            await loadDirectory(currentPath);
+            setHighlightedPath(res.destPath || null);
+            setTimeout(() => setHighlightedPath(null), 2500);
+          }
+          if (dualPane && rightCurrentPath.toLowerCase() === destDirLower) {
+            await loadRightDirectory(rightCurrentPath);
+            setHighlightedPath(res.destPath || null);
+            setTimeout(() => setHighlightedPath(null), 2500);
+          }
+        } else if (res?.requiresElevation && res.destDir) {
+          setElevationPrompt({
+            sources: [entry.path],
+            target: res.destDir,
+            isMove: false,
+            action: 'copy',
+            customDestFileName: res.destFileName,
+          });
+        } else if (res?.error) {
+          showToast({
+            type: 'error',
+            title: 'Save As failed',
+            message: res.error,
+          });
+        }
+      } catch (err: any) {
+        showToast({
+          type: 'error',
+          title: 'Save As failed',
+          message: err?.message || String(err),
+        });
+      }
+      return;
+    }
+
+    if (act === 'open') openEntry(entry, activePaneIsRight ? 'right' : 'left');
     if (act === 'explorer') api.showInExplorer(entry.path);
     if (act === 'calc' && entry.isDirectory) calculateFolderSize(entry.path, true);
     if (act === 'copy') {
@@ -1868,7 +1972,7 @@ export default function App() {
   };
   const onRightRowDoubleClick = (entry: DirEntry) => {
     setActivePane('right');
-    openEntry(entry);
+    openEntry(entry, 'right');
   };
 
   // Empty space handlers for panes: activate pane, allow paste / new folder via context
@@ -1950,18 +2054,80 @@ export default function App() {
           onClick={() => {
             const next = !dualPane;
             setDualPane(next);
-            if (next && rightEntries.length === 0) {
-              loadRightDirectory(rightCurrentPath);
+            if (next) {
+              if (splitMode === 'linked') {
+                const selectedDir = entries.find(e => e.path === selected && e.isDirectory);
+                if (selectedDir) {
+                  loadRightDirectory(selectedDir.path);
+                } else if (rightEntries.length === 0) {
+                  const firstDir = entries.find(e => e.isDirectory);
+                  if (firstDir) {
+                    setSelected(firstDir.path);
+                    loadRightDirectory(firstDir.path);
+                  } else {
+                    loadRightDirectory(rightCurrentPath || currentPath);
+                  }
+                }
+              } else {
+                if (rightEntries.length === 0) {
+                  loadRightDirectory(rightCurrentPath || currentPath);
+                }
+              }
             }
             setActivePane(next ? 'right' : 'left');
           }} 
-          className={`nav-button flex items-center gap-1 ${dualPane ? 'bg-zinc-800 text-blue-300 ring-1 ring-blue-500/50' : 'text-zinc-400'}`} 
-          style={{ WebkitAppRegion: 'no-drag', width: 'auto', minWidth: '66px', padding: '0 6px' } as any}
-          title="Toggle dual pane / second page (split view) — click to open the second pane"
+          className={`nav-button flex items-center gap-1.5 ${dualPane ? 'bg-zinc-800 text-blue-300 ring-1 ring-blue-500/50' : 'text-zinc-400'}`} 
+          style={{ WebkitAppRegion: 'no-drag', width: 'auto', minWidth: '68px', padding: '0 8px' } as any}
+          title={dualPane ? "Close split pane" : "Toggle dual pane (split view)"}
         >
-          <span className="text-[10px] font-bold tracking-tighter">||</span>
+          <Columns2 size={13} />
           <span className="text-[10px] font-semibold">Split</span>
         </button>
+
+        {/* Mode selector when Split view is active */}
+        {dualPane && (
+          <div 
+            className="flex items-center bg-zinc-900 border border-zinc-800 rounded p-0.5 text-xs select-none ml-0.5"
+            style={{ WebkitAppRegion: 'no-drag' } as any}
+          >
+            <button
+              onClick={() => setSplitMode('independent')}
+              className={`px-2 py-0.5 rounded text-[10px] font-medium flex items-center gap-1 transition cursor-pointer ${
+                splitMode === 'independent'
+                  ? 'bg-blue-600 text-white shadow-xs font-semibold'
+                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
+              }`}
+              title="Independent: Browse different folders independently on left and right"
+            >
+              <Layers size={11} />
+              <span>Independent</span>
+            </button>
+            <button
+              onClick={() => {
+                setSplitMode('linked');
+                const selectedDir = entries.find(e => e.path === selected && e.isDirectory);
+                if (selectedDir) {
+                  loadRightDirectory(selectedDir.path);
+                } else {
+                  const firstDir = entries.find(e => e.isDirectory);
+                  if (firstDir) {
+                    setSelected(firstDir.path);
+                    loadRightDirectory(firstDir.path);
+                  }
+                }
+              }}
+              className={`px-2 py-0.5 rounded text-[10px] font-medium flex items-center gap-1 transition cursor-pointer ${
+                splitMode === 'linked'
+                  ? 'bg-blue-600 text-white shadow-xs font-semibold'
+                  : 'text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800'
+              }`}
+              title="Linked: Selecting a folder on one side displays its contents on the other"
+            >
+              <Link2 size={11} />
+              <span>Linked</span>
+            </button>
+          </div>
+        )}
 
         {/* breathing room so the last button isn't under the OS min/max/close overlay controls on the right */}
         <div className="w-10" style={{ WebkitAppRegion: 'drag' } as any} />
@@ -2481,6 +2647,46 @@ export default function App() {
           <div className={`flex-1 overflow-hidden list-area ${dualPane ? 'flex flex-row' : 'flex flex-col'}`}>
             {/* Left pane */}
             <div className={`overflow-hidden flex flex-col ${dualPane ? 'w-1/2 border-r border-zinc-800' : 'flex-1'} ${dualPane && activePane === 'left' ? 'ring-1 ring-inset ring-blue-500/30' : ''}`}>
+              {/* Optional compact header in split mode */}
+              {dualPane && (
+                <div 
+                  onClick={activateLeft}
+                  className={`h-7 px-2.5 flex items-center justify-between text-[11px] border-b border-zinc-800/80 cursor-pointer select-none transition-colors ${
+                    activePane === 'left' ? 'bg-[#18181c] text-blue-300' : 'bg-[#121214] text-zinc-400 hover:bg-zinc-900'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 min-w-0 flex-1 mr-2">
+                    <Folder size={12} className={activePane === 'left' ? 'text-blue-400 flex-shrink-0' : 'text-zinc-500 flex-shrink-0'} />
+                    <span className="font-semibold text-zinc-200 truncate">
+                      {splitMode === 'linked' ? 'Left Pane (Master)' : 'Left Pane'}
+                    </span>
+                    <span className="text-[10px] text-zinc-500 truncate" title={currentPath}>
+                      {currentPath}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1 flex-shrink-0" onClick={e => e.stopPropagation()}>
+                    {activePane === 'left' && (
+                      <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.2 rounded bg-blue-500/20 text-blue-300 font-semibold mr-1">
+                        Active
+                      </span>
+                    )}
+                    <button
+                      onClick={goUp}
+                      className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition"
+                      title="Go up one level (Left pane)"
+                    >
+                      <ArrowUp size={11} />
+                    </button>
+                    <button
+                      onClick={() => loadDirectory(currentPath)}
+                      className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition"
+                      title="Refresh Left pane"
+                    >
+                      <RefreshCw size={10} />
+                    </button>
+                  </div>
+                </div>
+              )}
               {isLoading ? (
                 <div className="h-full flex items-center justify-center text-zinc-500 pt-4">
                   <RefreshCw className="spinner mr-2" size={18} /> Loading…
@@ -2499,14 +2705,14 @@ export default function App() {
                   highlightedPath={highlightedPath}
                   dragOverFolderPath={dragOverFolderPath}
                   tileSize={gridTileSize}
-                  onSelect={(p) => { setSelected(p); setActivePane('left'); }}
-                  onOpen={(entry) => openEntry(entry)}
+                  onSelect={(p) => handleLeftSelect(p)}
+                  onOpen={(entry) => openEntry(entry, 'left')}
                   onContextMenu={(e, entry) => { setActivePane('left'); setSelected(entry.path); showCtx(e, entry); }}
                   onPaneContextMenu={showLeftPaneCtx}
                   onCalculateFolderSize={calculateFolderSize}
                   onDropToFolder={(e, targetPath) => { handleDropToPath(e, targetPath); setActivePane('left'); }}
                   onPaneDrop={(e) => handlePaneDrop(e, false)}
-                  onQuickLook={(entry) => openEntry(entry)}
+                  onQuickLook={(entry) => openEntry(entry, 'left')}
                   formatSize={formatSize}
                   formatDate={formatDate}
                 />
@@ -2515,8 +2721,8 @@ export default function App() {
                   entries={visibleEntries}
                   sizeCache={sizeCache}
                   onNavigate={(p) => navigateTo(p)}
-                  onOpen={(e) => openEntry(e)}
-                  onSelect={(p) => { setSelected(p); setActivePane('left'); }}
+                  onOpen={(e) => openEntry(e, 'left')}
+                  onSelect={(p) => handleLeftSelect(p)}
                   selectedPath={selected}
                   onCalculateAll={calculateAllVisibleSizes}
                 />
@@ -2607,9 +2813,66 @@ export default function App() {
               )}
             </div>
 
-            {/* Right pane (the "second page") - no extra header/buttons, uses shared top bar + filter. Aligned with left. */}
+            {/* Right pane (the "second page") - supports both Independent and Linked modes */}
             {dualPane && (
               <div className={`w-1/2 flex flex-col overflow-hidden ${activePane === 'right' ? 'ring-1 ring-inset ring-blue-500/30' : ''}`}>
+                {/* Compact header for right pane */}
+                <div 
+                  onClick={activateRight}
+                  className={`h-7 px-2.5 flex items-center justify-between text-[11px] border-b border-zinc-800/80 cursor-pointer select-none transition-colors ${
+                    activePane === 'right' ? 'bg-[#18181c] text-blue-300' : 'bg-[#121214] text-zinc-400 hover:bg-zinc-900'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5 min-w-0 flex-1 mr-2">
+                    {splitMode === 'linked' ? (
+                      <Link2 size={12} className="text-blue-400 flex-shrink-0" />
+                    ) : (
+                      <Folder size={12} className={activePane === 'right' ? 'text-blue-400 flex-shrink-0' : 'text-zinc-500 flex-shrink-0'} />
+                    )}
+                    <span className="font-semibold text-zinc-200 truncate">
+                      {splitMode === 'linked' ? 'Right Pane (Linked Preview)' : 'Right Pane'}
+                    </span>
+                    <span className="text-[10px] text-zinc-500 truncate" title={rightCurrentPath}>
+                      {splitMode === 'linked'
+                        ? (selected ? `Contents of: ${selected.split(/[\\/]/).filter(Boolean).pop() || selected}` : rightCurrentPath)
+                        : rightCurrentPath
+                      }
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1 flex-shrink-0" onClick={e => e.stopPropagation()}>
+                    {activePane === 'right' && (
+                      <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.2 rounded bg-blue-500/20 text-blue-300 font-semibold mr-1">
+                        Active
+                      </span>
+                    )}
+                    {splitMode === 'independent' && (
+                      <>
+                        <button
+                          onClick={goRightUp}
+                          className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition"
+                          title="Go up one level (Right pane)"
+                        >
+                          <ArrowUp size={11} />
+                        </button>
+                        <button
+                          onClick={() => loadRightDirectory(rightCurrentPath)}
+                          className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-zinc-200 transition"
+                          title="Refresh Right pane"
+                        >
+                          <RefreshCw size={10} />
+                        </button>
+                      </>
+                    )}
+                    <button
+                      onClick={() => setDualPane(false)}
+                      className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-rose-400 transition ml-0.5"
+                      title="Close right split pane"
+                    >
+                      <X size={11} />
+                    </button>
+                  </div>
+                </div>
+
                 {isRightLoading ? (
                   <div className="h-full flex items-center justify-center text-zinc-500 pt-4">
                     <RefreshCw className="spinner mr-2" size={18} /> Loading…
@@ -2617,7 +2880,7 @@ export default function App() {
                 ) : rightVisibleEntries.length === 0 ? (
                   <div className="h-full flex flex-col items-center justify-center text-zinc-500 gap-2 pt-4">
                     <Folder size={40} />
-                    <div>Empty</div>
+                    <div>{splitMode === 'linked' && !selected ? 'Select a folder on the left to preview contents' : 'Empty'}</div>
                   </div>
                 ) : rightViewMode === 'grid' ? (
                   <GridView
@@ -2629,13 +2892,13 @@ export default function App() {
                     dragOverFolderPath={dragOverFolderPath}
                     tileSize={gridTileSize}
                     onSelect={(p) => { setRightSelected(p); setActivePane('right'); }}
-                    onOpen={(entry) => openEntry(entry)}
+                    onOpen={(entry) => openEntry(entry, 'right')}
                     onContextMenu={(e, entry) => { setActivePane('right'); setRightSelected(entry.path); showCtx(e, entry); }}
                     onPaneContextMenu={showRightPaneCtx}
                     onCalculateFolderSize={calculateFolderSize}
                     onDropToFolder={(e, targetPath) => { handleDropToPath(e, targetPath); setActivePane('right'); }}
                     onPaneDrop={(e) => handlePaneDrop(e, true)}
-                    onQuickLook={(entry) => openEntry(entry)}
+                    onQuickLook={(entry) => openEntry(entry, 'right')}
                     formatSize={formatSize}
                     formatDate={formatDate}
                   />
@@ -2644,7 +2907,7 @@ export default function App() {
                     entries={rightVisibleEntries}
                     sizeCache={sizeCache}
                     onNavigate={(p) => loadRightDirectory(p)}
-                    onOpen={(e) => openEntry(e)}
+                    onOpen={(e) => openEntry(e, 'right')}
                     onSelect={(p) => { setRightSelected(p); setActivePane('right'); }}
                     selectedPath={rightSelected}
                     onCalculateAll={calculateAllVisibleSizes}
@@ -2736,6 +2999,7 @@ export default function App() {
                 )}
               </div>
             )}
+
           </div>
 
           {/* Status bar */}
@@ -2773,8 +3037,25 @@ export default function App() {
             )}
             {selectedEntry && <div className="ml-auto truncate max-w-[420px] text-zinc-500">{selectedEntry.path}</div>}
             {operationStatus && <div className="ml-2 text-blue-400 truncate max-w-[280px]">{operationStatus}</div>}
-            <div className="ml-auto text-[10px] text-zinc-500 hidden md:block">
-              Ctrl+R = calc all • Click folder size to scan {dualPane ? '• Dual pane ON' : ''}
+            <div className="ml-auto text-[10px] text-zinc-500 hidden md:flex items-center gap-1.5">
+              <span>Ctrl+R = calc all • Click folder size to scan</span>
+              {dualPane && (
+                <button
+                  onClick={() => {
+                    const nextMode = splitMode === 'independent' ? 'linked' : 'independent';
+                    setSplitMode(nextMode);
+                    if (nextMode === 'linked' && selected) {
+                      const ent = entries.find(e => e.path === selected && e.isDirectory);
+                      if (ent) loadRightDirectory(ent.path);
+                    }
+                  }}
+                  className="ml-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium flex items-center gap-1 bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white transition cursor-pointer"
+                  title="Click to toggle between Independent and Linked split modes"
+                >
+                  {splitMode === 'linked' ? <Link2 size={10} className="text-blue-400" /> : <Layers size={10} className="text-zinc-400" />}
+                  <span>Split: {splitMode === 'linked' ? 'Linked' : 'Independent'}</span>
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -2830,6 +3111,12 @@ export default function App() {
               <div className="context-menu-item" onClick={() => ctxAction('explorer')}>
                 Show in Explorer
               </div>
+              {!ctx.entry.isDirectory && (
+                <div className="context-menu-item" onClick={() => ctxAction('save-as')}>
+                  <Save size={14} className="text-blue-400" />
+                  <span>Save as...</span>
+                </div>
+              )}
               <div className="border-t border-zinc-700 my-0.5" />
               {ctx.entry.isDirectory && (
                 <div className="context-menu-item" onClick={() => ctxAction('calc')}>
@@ -2937,6 +3224,53 @@ export default function App() {
                 </span>
               </div>
               <div className="flex items-center gap-2">
+                <button
+                  onClick={async () => {
+                    try {
+                      const res = await api.saveFileAs(viewer.path);
+                      if (res?.canceled) return;
+                      if (res?.success && res.destDir && res.destFileName) {
+                        showToast({
+                          type: 'success',
+                          title: 'File saved',
+                          message: `Saved "${res.destFileName}" in ${res.destDir}`,
+                        });
+                        const destDirLower = res.destDir.toLowerCase();
+                        if (currentPath.toLowerCase() === destDirLower) {
+                          loadDirectory(currentPath);
+                        }
+                        if (dualPane && rightCurrentPath.toLowerCase() === destDirLower) {
+                          loadRightDirectory(rightCurrentPath);
+                        }
+                      } else if (res?.requiresElevation && res.destDir) {
+                        setElevationPrompt({
+                          sources: [viewer.path],
+                          target: res.destDir,
+                          isMove: false,
+                          action: 'copy',
+                          customDestFileName: res.destFileName,
+                        });
+                      } else if (res?.error) {
+                        showToast({
+                          type: 'error',
+                          title: 'Save As failed',
+                          message: res.error,
+                        });
+                      }
+                    } catch (err: any) {
+                      showToast({
+                        type: 'error',
+                        title: 'Save As failed',
+                        message: err?.message || String(err),
+                      });
+                    }
+                  }}
+                  className="text-xs px-2.5 py-1 bg-zinc-700 hover:bg-zinc-600 rounded text-zinc-200 transition cursor-pointer font-medium flex items-center gap-1.5"
+                  title="Save a copy of this file to another location or rename"
+                >
+                  <Save size={13} />
+                  <span>Save as...</span>
+                </button>
                 <button
                   onClick={() => {
                     api.openPath(viewer.path);
@@ -3106,9 +3440,11 @@ export default function App() {
                   <div>
                     <span className="text-zinc-500">Items ({elevationPrompt.sources.length}): </span>
                     <span className="text-zinc-300 font-medium">
-                      {elevationPrompt.sources.length === 1
-                        ? `"${elevationPrompt.sources[0].split(/[\\/]/).pop()}"`
-                        : `${elevationPrompt.sources.slice(0, 3).map(s => `"${s.split(/[\\/]/).pop()}"`).join(', ')}${elevationPrompt.sources.length > 3 ? ` and ${elevationPrompt.sources.length - 3} more` : ''}`}
+                      {elevationPrompt.customDestFileName
+                        ? `"${elevationPrompt.customDestFileName}"`
+                        : (elevationPrompt.sources.length === 1
+                            ? `"${elevationPrompt.sources[0].split(/[\\/]/).pop()}"`
+                            : `${elevationPrompt.sources.slice(0, 3).map(s => `"${s.split(/[\\/]/).pop()}"`).join(', ')}${elevationPrompt.sources.length > 3 ? ` and ${elevationPrompt.sources.length - 3} more` : ''}`)}
                     </span>
                   </div>
                 </div>

@@ -769,6 +769,7 @@ async function performElevatedOperation(params: {
   isMove?: boolean;
   action?: 'copy' | 'move' | 'createFolder';
   newFolderName?: string;
+  customDestFileName?: string;
 }): Promise<{
   success: boolean;
   cancelled?: boolean;
@@ -806,7 +807,9 @@ async function performElevatedOperation(params: {
     });
   } else if (params.sources && params.sources.length > 0) {
     for (const src of params.sources) {
-      const name = path.basename(src);
+      const name = (params.customDestFileName && params.sources.length === 1)
+        ? params.customDestFileName
+        : path.basename(src);
       let isDirectory = false;
       try {
         const st = await fs.stat(src);
@@ -814,7 +817,9 @@ async function performElevatedOperation(params: {
       } catch {}
 
       const isSameFolder = path.dirname(path.resolve(src)).toLowerCase() === path.resolve(targetDir).toLowerCase();
-      const dest = await getUniqueDestination(targetDir, name, isSameFolder && !isMove);
+      const dest = (params.customDestFileName && params.sources.length === 1)
+        ? path.join(targetDir, params.customDestFileName)
+        : await getUniqueDestination(targetDir, name, isSameFolder && !isMove);
 
       items.push({
         src,
@@ -1275,6 +1280,75 @@ ipcMain.handle('select-folder', async () => {
   });
   if (result.canceled || result.filePaths.length === 0) return null;
   return result.filePaths[0];
+});
+
+ipcMain.handle('save-file-as', async (_e, sourcePath: string) => {
+  if (!mainWindow) return { canceled: true };
+  try {
+    const stat = await fs.stat(sourcePath);
+    if (stat.isDirectory()) {
+      return { success: false, error: 'Cannot "Save as" a directory. Please select a file.' };
+    }
+  } catch (err: any) {
+    return { success: false, error: `Source file does not exist or cannot be accessed: ${err?.message || err}` };
+  }
+
+  const ext = path.extname(sourcePath).replace(/^\./, '');
+  const filters: Electron.FileFilter[] = [];
+  if (ext) {
+    filters.push({ name: `${ext.toUpperCase()} File (*.${ext})`, extensions: [ext] });
+  }
+  filters.push({ name: 'All Files (*.*)', extensions: ['*'] });
+
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'Save As',
+    defaultPath: sourcePath,
+    filters,
+    properties: ['showOverwriteConfirmation', 'createDirectory'],
+  });
+
+  if (result.canceled || !result.filePath) {
+    return { canceled: true };
+  }
+
+  const destPath = result.filePath;
+
+  // Check if destination is exactly the same as source
+  if (path.resolve(sourcePath).toLowerCase() === path.resolve(destPath).toLowerCase()) {
+    return {
+      success: false,
+      error: 'Destination is identical to the source file.',
+    };
+  }
+
+  try {
+    await fs.mkdir(path.dirname(destPath), { recursive: true });
+    await copySingleFile(sourcePath, destPath);
+    return {
+      success: true,
+      sourcePath,
+      destPath,
+      destDir: path.dirname(destPath),
+      destFileName: path.basename(destPath),
+    };
+  } catch (err: any) {
+    const errMsg = err?.message || String(err);
+    if (errMsg.includes('EPERM') || errMsg.includes('EACCES') || errMsg.includes('Permission denied')) {
+      return {
+        success: false,
+        requiresElevation: true,
+        sourcePath,
+        destPath,
+        destDir: path.dirname(destPath),
+        destFileName: path.basename(destPath),
+        error: errMsg,
+      };
+    }
+    return {
+      success: false,
+      error: errMsg,
+    };
+  }
 });
 
 ipcMain.handle('open-path', async (_e, target: string) => {

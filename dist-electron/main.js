@@ -403,16 +403,16 @@ async function z(e) {
 			isDirectory: !0
 		});
 	} else if (e.sources && e.sources.length > 0) for (let r of e.sources) {
-		let e = l.basename(r), a = !1;
+		let a = e.customDestFileName && e.sources.length === 1 ? e.customDestFileName : l.basename(r), o = !1;
 		try {
-			a = (await u.stat(r)).isDirectory();
+			o = (await u.stat(r)).isDirectory();
 		} catch {}
-		let o = await N(t, e, l.dirname(l.resolve(r)).toLowerCase() === l.resolve(t).toLowerCase() && !n);
+		let s = l.dirname(l.resolve(r)).toLowerCase() === l.resolve(t).toLowerCase(), c = e.customDestFileName && e.sources.length === 1 ? l.join(t, e.customDestFileName) : await N(t, a, s && !n);
 		i.push({
 			src: r,
-			dest: o,
+			dest: c,
 			action: n ? "move" : "copy",
-			isDirectory: a
+			isDirectory: o
 		});
 	}
 	if (i.length === 0) return {
@@ -702,6 +702,62 @@ r.handle("perform-elevated-op", async (e, t) => z(t)), r.handle("copy-files", as
 		title: "Open folder"
 	});
 	return e.canceled || e.filePaths.length === 0 ? null : e.filePaths[0];
+}), r.handle("save-file-as", async (e, t) => {
+	if (!w) return { canceled: !0 };
+	try {
+		if ((await u.stat(t)).isDirectory()) return {
+			success: !1,
+			error: "Cannot \"Save as\" a directory. Please select a file."
+		};
+	} catch (e) {
+		return {
+			success: !1,
+			error: `Source file does not exist or cannot be accessed: ${e?.message || e}`
+		};
+	}
+	let r = l.extname(t).replace(/^\./, ""), i = [];
+	r && i.push({
+		name: `${r.toUpperCase()} File (*.${r})`,
+		extensions: [r]
+	}), i.push({
+		name: "All Files (*.*)",
+		extensions: ["*"]
+	});
+	let a = await n.showSaveDialog(w, {
+		title: "Save As",
+		defaultPath: t,
+		filters: i,
+		properties: ["showOverwriteConfirmation", "createDirectory"]
+	});
+	if (a.canceled || !a.filePath) return { canceled: !0 };
+	let o = a.filePath;
+	if (l.resolve(t).toLowerCase() === l.resolve(o).toLowerCase()) return {
+		success: !1,
+		error: "Destination is identical to the source file."
+	};
+	try {
+		return await u.mkdir(l.dirname(o), { recursive: !0 }), await P(t, o), {
+			success: !0,
+			sourcePath: t,
+			destPath: o,
+			destDir: l.dirname(o),
+			destFileName: l.basename(o)
+		};
+	} catch (e) {
+		let n = e?.message || String(e);
+		return n.includes("EPERM") || n.includes("EACCES") || n.includes("Permission denied") ? {
+			success: !1,
+			requiresElevation: !0,
+			sourcePath: t,
+			destPath: o,
+			destDir: l.dirname(o),
+			destFileName: l.basename(o),
+			error: n
+		} : {
+			success: !1,
+			error: n
+		};
+	}
 }), r.handle("open-path", async (e, t) => {
 	await c.openPath(t);
 }), r.handle("show-in-explorer", async (e, t) => {

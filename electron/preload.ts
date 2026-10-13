@@ -46,6 +46,17 @@ export interface FileOpResult {
   error?: string;
 }
 
+export interface SaveAsResult {
+  canceled?: boolean;
+  success?: boolean;
+  sourcePath?: string;
+  destPath?: string;
+  destDir?: string;
+  destFileName?: string;
+  requiresElevation?: boolean;
+  error?: string;
+}
+
 const api = {
   // List immediate children of a directory
   listDirectory: (dirPath: string): Promise<DirEntry[]> => 
@@ -87,9 +98,10 @@ const api = {
     target: string,
     isMove?: boolean,
     action?: 'copy' | 'move' | 'createFolder',
-    newFolderName?: string
+    newFolderName?: string,
+    customDestFileName?: string
   ): Promise<FileOpResult> =>
-    ipcRenderer.invoke('perform-elevated-op', { sources, target, isMove, action, newFolderName }),
+    ipcRenderer.invoke('perform-elevated-op', { sources, target, isMove, action, newFolderName, customDestFileName }),
 
   // Create a new folder in the given directory (with unique name "New folder", "New folder (2)" etc.)
   createFolder: (targetDir: string): Promise<any> =>
@@ -149,6 +161,10 @@ const api = {
 
   saveThumbnailCache: (filePath: string, dataUrl: string, mtime?: string, size?: number): Promise<boolean> =>
     ipcRenderer.invoke('save-thumbnail-cache', { filePath, dataUrl, mtime, size }),
+
+  // Prompt user with native Save As dialog and copy the file to the chosen location/name
+  saveFileAs: (sourcePath: string): Promise<SaveAsResult> =>
+    ipcRenderer.invoke('save-file-as', sourcePath),
 
   // Optional: platform info
   platform: process.platform,
