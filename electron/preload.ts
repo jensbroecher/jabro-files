@@ -9,6 +9,7 @@ export interface DirEntry {
   dirCount?: number;
   mtime: string;
   ext?: string;
+  missing?: boolean;
 }
 
 export interface SizeResult {
@@ -168,6 +169,13 @@ const api = {
   // Prompt user with native Save As dialog and copy the file to the chosen location/name
   saveFileAs: (sourcePath: string): Promise<SaveAsResult> =>
     ipcRenderer.invoke('save-file-as', sourcePath),
+
+  // Collections (Virtual Folders) support
+  selectFiles: (): Promise<string[]> =>
+    ipcRenderer.invoke('select-files'),
+
+  getEntriesStats: (filePaths: string[]): Promise<any[]> =>
+    ipcRenderer.invoke('get-entries-stats', filePaths),
 
   // Optional: platform info
   platform: process.platform,

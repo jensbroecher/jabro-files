@@ -374,6 +374,7 @@ interface DirEntry {
   dirCount?: number;
   mtime: string;
   ext?: string;
+  missing?: boolean;
 }
 
 ipcMain.handle('list-directory', async (_event, dirPath: string): Promise<DirEntry[]> => {
@@ -1315,6 +1316,51 @@ ipcMain.handle('select-folder', async () => {
   });
   if (result.canceled || result.filePaths.length === 0) return null;
   return result.filePaths[0];
+});
+
+ipcMain.handle('select-files', async () => {
+  if (!mainWindow) return [];
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile', 'multiSelections'],
+    title: 'Select files to add to collection',
+  });
+  if (result.canceled || result.filePaths.length === 0) return [];
+  return result.filePaths;
+});
+
+ipcMain.handle('get-entries-stats', async (_e, filePaths: string[]): Promise<DirEntry[]> => {
+  if (!Array.isArray(filePaths)) return [];
+  const results: DirEntry[] = [];
+  for (const fp of filePaths) {
+    if (!fp || typeof fp !== 'string') continue;
+    try {
+      const stat = await fs.stat(fp);
+      const isDirectory = stat.isDirectory();
+      const name = path.basename(fp) || fp;
+      const ext = isDirectory ? undefined : path.extname(name).toLowerCase() || undefined;
+      results.push({
+        name,
+        path: fp,
+        isDirectory,
+        mtime: stat.mtime.toISOString(),
+        size: isDirectory ? undefined : stat.size,
+        ext,
+      });
+    } catch {
+      const name = path.basename(fp) || fp;
+      const ext = path.extname(name).toLowerCase() || undefined;
+      results.push({
+        name,
+        path: fp,
+        isDirectory: false,
+        mtime: new Date().toISOString(),
+        size: 0,
+        ext,
+        missing: true,
+      });
+    }
+  }
+  return results;
 });
 
 ipcMain.handle('save-file-as', async (_e, sourcePath: string) => {

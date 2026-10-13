@@ -6,13 +6,42 @@ import {
   ShieldAlert, ShieldCheck, Box, Sparkles, FileText,
   Plus, ChevronRight, ChevronLeft, LayoutGrid, List, Flame, Edit3, ExternalLink, Eye, PieChart,
   Database, Trash2, PanelLeft, PanelLeftClose, PanelLeftOpen, Save,
-  Columns2, Link2, Layers, Image, Video, Music, FileCode
+  Columns2, Link2, Layers, Image, Video, Music, FileCode,
+  Bookmark, BookmarkCheck, BookmarkPlus, Tag, FolderPlus
 } from 'lucide-react';
 import { ThreeViewer } from './components/ThreeViewer';
 import { PdfViewer } from './components/PdfViewer';
 import { GridView } from './components/GridView';
 import { Background3DSnapshotGenerator } from './components/Background3DSnapshotGenerator';
 import { BackgroundPdfSnapshotGenerator } from './components/BackgroundPdfSnapshotGenerator';
+
+export interface Collection {
+  id: string;
+  name: string;
+  color?: 'violet' | 'blue' | 'emerald' | 'amber' | 'rose' | 'cyan';
+  paths: string[];
+  createdAt: string;
+}
+
+export const COLLECTION_COLORS: Array<{
+  key: 'violet' | 'blue' | 'emerald' | 'amber' | 'rose' | 'cyan';
+  label: string;
+  textClass: string;
+  bgClass: string;
+  borderClass: string;
+  ringClass: string;
+}> = [
+  { key: 'violet', label: 'Violet', textClass: 'text-violet-400', bgClass: 'bg-violet-500', borderClass: 'border-violet-500', ringClass: 'ring-violet-500' },
+  { key: 'blue', label: 'Blue', textClass: 'text-blue-400', bgClass: 'bg-blue-500', borderClass: 'border-blue-500', ringClass: 'ring-blue-500' },
+  { key: 'emerald', label: 'Emerald', textClass: 'text-emerald-400', bgClass: 'bg-emerald-500', borderClass: 'border-emerald-500', ringClass: 'ring-emerald-500' },
+  { key: 'amber', label: 'Amber', textClass: 'text-amber-400', bgClass: 'bg-amber-500', borderClass: 'border-amber-500', ringClass: 'ring-amber-500' },
+  { key: 'rose', label: 'Rose', textClass: 'text-rose-400', bgClass: 'bg-rose-500', borderClass: 'border-rose-500', ringClass: 'ring-rose-500' },
+  { key: 'cyan', label: 'Cyan', textClass: 'text-cyan-400', bgClass: 'bg-cyan-500', borderClass: 'border-cyan-500', ringClass: 'ring-cyan-500' },
+];
+
+function getColColor(colColor?: string) {
+  return COLLECTION_COLORS.find(c => c.key === colColor) || COLLECTION_COLORS[0];
+}
 
 interface ToastInfo {
   id: string;
@@ -47,6 +76,7 @@ interface DirEntry {
   dirCount?: number;
   mtime: string;
   ext?: string;
+  missing?: boolean;
 }
 
 interface SizeResult {
@@ -140,17 +170,30 @@ function matchesSearch(name: string, search: string): boolean {
   });
 }
 
-function getTabTitle(p: string): string {
+function getTabTitle(p: string, collections?: Collection[]): string {
+  if (p.startsWith('collection:')) {
+    const colId = p.slice('collection:'.length);
+    const col = collections?.find(c => c.id === colId);
+    return col ? col.name : 'Collection';
+  }
   const trimmed = p.replace(/[\\/]+$/, '');
   const parts = trimmed.split(/[\\/]/).filter(Boolean);
   if (parts.length === 0) return p;
   return parts[parts.length - 1] || p;
 }
 
-function parseBreadcrumbs(pathStr: string): Array<{ name: string; fullPath: string }> {
+function parseBreadcrumbs(pathStr: string, collections?: Collection[]): Array<{ name: string; fullPath: string; isCollectionRoot?: boolean; isCollection?: boolean }> {
+  if (pathStr.startsWith('collection:')) {
+    const colId = pathStr.slice('collection:'.length);
+    const col = collections?.find(c => c.id === colId);
+    return [
+      { name: 'Collections', fullPath: 'collection:', isCollectionRoot: true },
+      { name: col?.name || 'Virtual Collection', fullPath: pathStr, isCollection: true },
+    ];
+  }
   const normalized = pathStr.replace(/\//g, '\\');
   const parts = normalized.split('\\').filter(Boolean);
-  const breadcrumbs: Array<{ name: string; fullPath: string }> = [];
+  const breadcrumbs: Array<{ name: string; fullPath: string; isCollectionRoot?: boolean; isCollection?: boolean }> = [];
 
   let accumulated = '';
   for (let i = 0; i < parts.length; i++) {
@@ -377,6 +420,59 @@ export default function App() {
   // Customizable Quick Access (pinned folders). Persisted in localStorage.
   const [quickAccess, setQuickAccess] = useState<Array<{ label: string; path: string }>>([]);
 
+  // Virtual Collections (virtual folders without copying/moving files). Persisted in localStorage.
+  const [collections, setCollections] = useState<Collection[]>(() => {
+    try {
+      const saved = localStorage.getItem('jabro-collections');
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return [
+      {
+        id: 'col-favorites',
+        name: 'Favorites',
+        color: 'amber',
+        paths: [],
+        createdAt: new Date().toISOString(),
+      }
+    ];
+  });
+  const collectionsRef = useRef<Collection[]>(collections);
+  useEffect(() => {
+    collectionsRef.current = collections;
+  }, [collections]);
+
+  const [collectionModal, setCollectionModal] = useState<{
+    isOpen: boolean;
+    mode: 'create' | 'edit';
+    collectionId?: string;
+    name: string;
+    color: 'violet' | 'blue' | 'emerald' | 'amber' | 'rose' | 'cyan';
+  }>({
+    isOpen: false,
+    mode: 'create',
+    name: '',
+    color: 'violet',
+  });
+
+  const [collectionCtx, setCollectionCtx] = useState<{
+    x: number;
+    y: number;
+    collection: Collection;
+  } | null>(null);
+  const collectionMenuRef = useRef<HTMLDivElement>(null);
+
+  const [dragOverCollectionId, setDragOverCollectionId] = useState<string | null>(null);
+  const [pendingAddPaths, setPendingAddPaths] = useState<string[] | null>(null);
+  const [submenuOpen, setSubmenuOpen] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('jabro-collections', JSON.stringify(collections));
+    } catch (e) {
+      console.error('Failed to save collections to localStorage', e);
+    }
+  }, [collections]);
+
   // Sidebar state (resizable & collapsible with persistence)
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
     try {
@@ -601,8 +697,9 @@ export default function App() {
 
   // Load directory contents
   const loadDirectory = useCallback(async (path: string) => {
+    const isCollection = path.startsWith('collection:');
     const trimmed = path.replace(/\\+$/, '');
-    const normalized = trimmed.endsWith(':') ? trimmed + '\\' : trimmed;
+    const normalized = isCollection ? path : (trimmed.endsWith(':') ? trimmed + '\\' : trimmed);
     if (leftLoadingRef.current === normalized) return;
     leftLoadingRef.current = normalized;
 
@@ -624,7 +721,14 @@ export default function App() {
     setFilter('');
 
     try {
-      const list: DirEntry[] = await api.listDirectory(normalized);
+      let list: DirEntry[] = [];
+      if (isCollection) {
+        const colId = normalized.slice('collection:'.length);
+        const col = collectionsRef.current.find(c => c.id === colId);
+        list = col && api?.getEntriesStats ? await api.getEntriesStats(col.paths) : [];
+      } else {
+        list = await api.listDirectory(normalized);
+      }
 
       // Ignore if user has since navigated elsewhere
       if (myToken !== leftLoadTokenRef.current) return;
@@ -671,8 +775,9 @@ export default function App() {
 
   // Load for right pane (duplicated for dual pane support)
   const loadRightDirectory = useCallback(async (path: string) => {
+    const isCollection = path.startsWith('collection:');
     const trimmed = path.replace(/\\+$/, '');
-    const normalized = trimmed.endsWith(':') ? trimmed + '\\' : trimmed;
+    const normalized = isCollection ? path : (trimmed.endsWith(':') ? trimmed + '\\' : trimmed);
     if (rightLoadingRef.current === normalized) return;
     rightLoadingRef.current = normalized;
 
@@ -692,7 +797,14 @@ export default function App() {
     }
 
     try {
-      const list: DirEntry[] = await api.listDirectory(normalized);
+      let list: DirEntry[] = [];
+      if (isCollection) {
+        const colId = normalized.slice('collection:'.length);
+        const col = collectionsRef.current.find(c => c.id === colId);
+        list = col && api?.getEntriesStats ? await api.getEntriesStats(col.paths) : [];
+      } else {
+        list = await api.listDirectory(normalized);
+      }
 
       if (myToken !== rightLoadTokenRef.current) return;
 
@@ -869,6 +981,211 @@ export default function App() {
     const parent = parts.slice(0, -1).join('\\') + '\\';
     navigateRight(parent);
   };
+
+  // Collection operations (Virtual Folders)
+  const addPathsToCollection = useCallback((colId: string, newPaths: string[]) => {
+    if (!newPaths || newPaths.length === 0) return;
+    setCollections(prev => {
+      return prev.map(col => {
+        if (col.id !== colId) return col;
+        const existingLower = new Set(col.paths.map(p => p.toLowerCase()));
+        const toAdd = newPaths.filter(p => !existingLower.has(p.toLowerCase()));
+        if (toAdd.length === 0) {
+          showToast({
+            type: 'info',
+            title: 'Already in collection',
+            message: `"${col.name}" already contains the selected item(s).`,
+          });
+          return col;
+        }
+        showToast({
+          type: 'success',
+          title: `Added to ${col.name}`,
+          message: `Added ${toAdd.length} item${toAdd.length > 1 ? 's' : ''} to virtual collection.`,
+        });
+        return {
+          ...col,
+          paths: [...col.paths, ...toAdd],
+        };
+      });
+    });
+
+    const colPath = 'collection:' + colId;
+    dirCacheRef.current.delete(colPath);
+    if (currentPath === colPath) {
+      loadDirectory(colPath);
+    }
+    if (dualPane && rightCurrentPath === colPath) {
+      loadRightDirectory(colPath);
+    }
+  }, [showToast, currentPath, rightCurrentPath, dualPane, loadDirectory, loadRightDirectory]);
+
+  const removePathFromCollection = useCallback((colId: string, pathToRemove: string) => {
+    setCollections(prev => prev.map(col => {
+      if (col.id !== colId) return col;
+      return {
+        ...col,
+        paths: col.paths.filter(p => p.toLowerCase() !== pathToRemove.toLowerCase()),
+      };
+    }));
+    showToast({
+      type: 'info',
+      title: 'Removed from collection',
+      message: 'Item removed from virtual collection.',
+    });
+    const colPath = 'collection:' + colId;
+    dirCacheRef.current.delete(colPath);
+    if (currentPath === colPath) loadDirectory(colPath);
+    if (dualPane && rightCurrentPath === colPath) loadRightDirectory(colPath);
+  }, [showToast, currentPath, rightCurrentPath, dualPane, loadDirectory, loadRightDirectory]);
+
+  const cleanMissingFromCollection = useCallback((colId: string) => {
+    const col = collectionsRef.current.find(c => c.id === colId);
+    if (!col) return;
+    const activeEntries = (currentPath === 'collection:' + colId) ? entries : ((rightCurrentPath === 'collection:' + colId) ? rightEntries : []);
+    const missingPaths = new Set(activeEntries.filter(e => e.missing).map(e => e.path.toLowerCase()));
+    if (missingPaths.size === 0) {
+      showToast({
+        type: 'info',
+        title: 'Collection is clean',
+        message: 'No missing or broken paths found.',
+      });
+      return;
+    }
+    setCollections(prev => prev.map(c => {
+      if (c.id !== colId) return c;
+      return {
+        ...c,
+        paths: c.paths.filter(p => !missingPaths.has(p.toLowerCase())),
+      };
+    }));
+    showToast({
+      type: 'success',
+      title: 'Cleaned collection',
+      message: `Removed ${missingPaths.size} missing file reference(s).`,
+    });
+    const colPath = 'collection:' + colId;
+    dirCacheRef.current.delete(colPath);
+    if (currentPath === colPath) loadDirectory(colPath);
+    if (dualPane && rightCurrentPath === colPath) loadRightDirectory(colPath);
+  }, [entries, rightEntries, currentPath, rightCurrentPath, dualPane, showToast, loadDirectory, loadRightDirectory]);
+
+  const deleteCollection = useCallback((colId: string) => {
+    const col = collectionsRef.current.find(c => c.id === colId);
+    if (!col) return;
+    setCollections(prev => prev.filter(c => c.id !== colId));
+    showToast({
+      type: 'info',
+      title: 'Collection deleted',
+      message: `Deleted virtual collection "${col.name}".`,
+    });
+    const colPath = 'collection:' + colId;
+    dirCacheRef.current.delete(colPath);
+    if (currentPath === colPath) {
+      navigateTo(drives[0]?.path || 'C:\\');
+    }
+    if (dualPane && rightCurrentPath === colPath) {
+      navigateRight(drives[0]?.path || 'C:\\');
+    }
+  }, [showToast, currentPath, rightCurrentPath, dualPane, drives, navigateTo, navigateRight]);
+
+  const saveCollectionModal = useCallback(() => {
+    const trimmedName = collectionModal.name.trim();
+    if (!trimmedName) {
+      showToast({ type: 'error', title: 'Name required', message: 'Please enter a collection name.' });
+      return;
+    }
+    if (collectionModal.mode === 'create') {
+      const newCol: Collection = {
+        id: 'col-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7),
+        name: trimmedName,
+        color: collectionModal.color,
+        paths: pendingAddPaths || [],
+        createdAt: new Date().toISOString(),
+      };
+      setCollections(prev => [...prev, newCol]);
+      showToast({
+        type: 'success',
+        title: 'Collection created',
+        message: `Created collection "${newCol.name}".`,
+      });
+      if (pendingAddPaths && pendingAddPaths.length > 0) {
+        showToast({
+          type: 'info',
+          title: 'Items added',
+          message: `Added ${pendingAddPaths.length} item(s) to "${newCol.name}".`,
+        });
+      }
+    } else if (collectionModal.mode === 'edit' && collectionModal.collectionId) {
+      setCollections(prev => prev.map(c => {
+        if (c.id !== collectionModal.collectionId) return c;
+        return {
+          ...c,
+          name: trimmedName,
+          color: collectionModal.color,
+        };
+      }));
+      showToast({
+        type: 'success',
+        title: 'Collection updated',
+        message: `Updated "${trimmedName}".`,
+      });
+      const colPath = 'collection:' + collectionModal.collectionId;
+      dirCacheRef.current.delete(colPath);
+    }
+    setCollectionModal(prev => ({ ...prev, isOpen: false }));
+    setPendingAddPaths(null);
+  }, [collectionModal, pendingAddPaths, showToast]);
+
+  const handlePickFilesForCollection = useCallback(async (colId: string) => {
+    if (api?.selectFiles) {
+      try {
+        const selectedPaths = await api.selectFiles();
+        if (selectedPaths && selectedPaths.length > 0) {
+          addPathsToCollection(colId, selectedPaths);
+        }
+      } catch (e: any) {
+        console.error('Failed to select files', e);
+      }
+    }
+  }, [addPathsToCollection]);
+
+  const handleDropToCollection = useCallback(async (e: React.DragEvent, colId: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOverCollectionId(null);
+
+    let paths: string[] = [];
+    try {
+      const json = e.dataTransfer.getData('application/x-jabro-path') || e.dataTransfer.getData('text/plain');
+      if (json) {
+        try {
+          const parsed = JSON.parse(json);
+          if (Array.isArray(parsed)) paths = parsed.filter((p: any) => typeof p === 'string');
+          else if (typeof parsed === 'string') paths = [parsed];
+        } catch {
+          if (/^[a-zA-Z]:[\\/]/.test(json.trim()) || /^\\\\[\w]/.test(json.trim())) {
+            paths = [json.trim()];
+          }
+        }
+      }
+    } catch {}
+
+    if (paths.length === 0 && e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      for (let i = 0; i < e.dataTransfer.files.length; i++) {
+        const f = e.dataTransfer.files[i];
+        let p = '';
+        try {
+          p = (api as any)?.getPathForFile ? (api as any).getPathForFile(f) : (f as any).path || '';
+        } catch {}
+        if (p) paths.push(p);
+      }
+    }
+
+    if (paths.length > 0) {
+      addPathsToCollection(colId, paths);
+    }
+  }, [addPathsToCollection]);
 
   // THE KEY FEATURE: recursive folder size
   const calculateFolderSize = useCallback(async (targetPath: string, force = false) => {
@@ -1323,7 +1640,12 @@ export default function App() {
     }
     if (paths.length === 0) return;
 
-    // Modifiers & destination calculation
+    // Dropping into a virtual collection: adds references without copying/moving on disk
+    if (targetDir.startsWith('collection:')) {
+      const colId = targetDir.slice('collection:'.length);
+      addPathsToCollection(colId, paths);
+      return;
+    }
     const forceCopy = e.ctrlKey;
     const forceMove = e.shiftKey;
     const isSameDrive = paths.length > 0 && paths[0][0]?.toLowerCase() === targetDir[0]?.toLowerCase();
@@ -1431,7 +1753,7 @@ export default function App() {
         details: err?.stack || errMsg
       });
     }
-  }, [activePaneIsRight, rightCurrentPath, currentPath, dualPane, loadDirectory, loadRightDirectory, showToast, dismissToast]);
+  }, [activePaneIsRight, rightCurrentPath, currentPath, dualPane, loadDirectory, loadRightDirectory, showToast, dismissToast, addPathsToCollection]);
 
   const handlePaneDrop = useCallback((e: React.DragEvent, isRight: boolean) => {
     const tgt = isRight ? rightCurrentPath : currentPath;
@@ -1797,7 +2119,10 @@ export default function App() {
     showContextMenu(e, entry);
   };
 
-  const closeCtx = () => setCtx(null);
+  const closeCtx = () => {
+    setCtx(null);
+    setSubmenuOpen(null);
+  };
 
   // Drive context menu (for THIS PC sidebar entries)
   const showDriveCtx = (e: React.MouseEvent, drive: DriveInfo) => {
@@ -1958,6 +2283,9 @@ export default function App() {
       if (driveCtx && driveMenuRef.current && !driveMenuRef.current.contains(event.target as Node)) {
         closeDriveCtx();
       }
+      if (collectionCtx && collectionMenuRef.current && !collectionMenuRef.current.contains(event.target as Node)) {
+        setCollectionCtx(null);
+      }
       if (showCachePopover && cachePopoverRef.current && !cachePopoverRef.current.contains(event.target as Node)) {
         setShowCachePopover(false);
       }
@@ -1969,7 +2297,7 @@ export default function App() {
     return () => {
       document.removeEventListener('mousedown', handleOutsideClick);
     };
-  }, [ctx, driveCtx, showCachePopover]);
+  }, [ctx, driveCtx, collectionCtx, showCachePopover]);
 
   const selectedEntry = entries.find(e => e.path === selected);
 
@@ -2165,8 +2493,12 @@ export default function App() {
               }`}
               title={tab.path}
             >
-              <Folder size={13} className={isActive ? 'text-blue-400 flex-shrink-0' : 'text-zinc-500 flex-shrink-0'} />
-              <span className="truncate flex-1 min-w-0">{getTabTitle(tab.path)}</span>
+              {tab.path.startsWith('collection:') ? (
+                <Bookmark size={13} className={isActive ? 'text-violet-400 flex-shrink-0' : 'text-zinc-500 flex-shrink-0'} />
+              ) : (
+                <Folder size={13} className={isActive ? 'text-blue-400 flex-shrink-0' : 'text-zinc-500 flex-shrink-0'} />
+              )}
+              <span className="truncate flex-1 min-w-0">{getTabTitle(tab.path, collections)}</span>
               {tabs.length > 1 && (
                 <button
                   onClick={(e) => closeTab(tab.id, e)}
@@ -2237,21 +2569,35 @@ export default function App() {
         ) : (
           <div className="flex items-center flex-1 min-w-0 h-8 box-border bg-zinc-900/60 border border-zinc-800/80 rounded px-2.5 hover:border-zinc-700/80 transition-colors">
             <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5 max-w-full">
-              {parseBreadcrumbs(activeCurrentPath).map((b, idx, arr) => {
+              {parseBreadcrumbs(activeCurrentPath, collections).map((b, idx, arr) => {
                 const isDrive = /^[a-zA-Z]:$/i.test(b.name);
                 const driveMatch = isDrive ? drives.find(d => d.name.toUpperCase() === b.name.toUpperCase()) : null;
                 const driveTitle = driveMatch?.label
                   ? `${driveMatch.label} (${b.name}) • ${driveMatch.path}${driveMatch.freeSpace != null && driveMatch.size != null ? ` (${formatSize(driveMatch.freeSpace)} free of ${formatSize(driveMatch.size)})` : ''}`
                   : (driveMatch?.size != null && driveMatch?.freeSpace != null ? `${b.name} (${formatSize(driveMatch.freeSpace)} free of ${formatSize(driveMatch.size)})` : b.fullPath);
 
+                const isCol = b.isCollection;
+                const colObj = isCol ? collections.find(c => ('collection:' + c.id) === b.fullPath) : null;
+                const colColor = getColColor(colObj?.color);
+
                 return (
                   <React.Fragment key={b.fullPath}>
                     <button
-                      onClick={() => activeNavigate(b.fullPath)}
-                      className="px-1.5 py-0.5 rounded text-zinc-300 hover:text-white hover:bg-zinc-800 transition text-[12px] font-medium flex items-center cursor-pointer whitespace-nowrap"
-                      title={isDrive ? driveTitle : b.fullPath}
+                      onClick={() => {
+                        if (!b.isCollectionRoot) activeNavigate(b.fullPath);
+                      }}
+                      className={`px-1.5 py-0.5 rounded transition text-[12px] font-medium flex items-center whitespace-nowrap ${
+                        b.isCollectionRoot
+                          ? 'text-zinc-500 cursor-default'
+                          : isCol
+                            ? `${colColor.textClass} hover:bg-zinc-800 cursor-pointer font-semibold`
+                            : 'text-zinc-300 hover:text-white hover:bg-zinc-800 cursor-pointer'
+                      }`}
+                      title={isDrive ? driveTitle : (isCol ? `Virtual Collection: ${b.name}` : b.fullPath)}
                     >
                       {isDrive && <HardDrive size={12} className="mr-1 text-emerald-400 flex-shrink-0" />}
+                      {b.isCollectionRoot && <Layers size={12} className="mr-1 text-violet-400 flex-shrink-0" />}
+                      {isCol && <Bookmark size={12} className={`mr-1 ${colColor.textClass} flex-shrink-0`} />}
                       {b.name}
                     </button>
                     {idx < arr.length - 1 && (
@@ -2261,6 +2607,42 @@ export default function App() {
                 );
               })}
             </div>
+            {activeCurrentPath.startsWith('collection:') && (
+              <div className="flex items-center gap-1.5 ml-2 flex-shrink-0">
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handlePickFilesForCollection(activeCurrentPath.slice('collection:'.length));
+                  }}
+                  className="px-2 py-0.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-[11px] font-medium flex items-center gap-1 transition shadow-xs cursor-pointer"
+                  title="Add files from disk to this collection"
+                >
+                  <Plus size={11} />
+                  <span>Add files...</span>
+                </button>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const colId = activeCurrentPath.slice('collection:'.length);
+                    const col = collections.find(c => c.id === colId);
+                    if (col) {
+                      setCollectionModal({
+                        isOpen: true,
+                        mode: 'edit',
+                        collectionId: col.id,
+                        name: col.name,
+                        color: col.color || 'violet',
+                      });
+                    }
+                  }}
+                  className="px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 text-[11px] font-medium flex items-center gap-1 transition cursor-pointer border border-zinc-700/60"
+                  title="Edit collection name & color"
+                >
+                  <Edit3 size={11} />
+                  <span>Edit</span>
+                </button>
+              </div>
+            )}
             {/* Click empty space to edit as text */}
             <div
               className="flex-1 h-full min-h-[20px] cursor-text"
@@ -2391,6 +2773,76 @@ export default function App() {
                   );
                 }) : (
                   <div className="mx-1.5 px-2.5 py-1 text-zinc-500 text-xs">No drives detected</div>
+                )}
+
+                <div className="px-3 pt-4 pb-1 text-[10px] font-semibold tracking-wider text-zinc-500 flex items-center justify-between">
+                  <span>COLLECTIONS</span>
+                  <button
+                    onClick={() => setCollectionModal({ isOpen: true, mode: 'create', name: '', color: 'violet' })}
+                    className="text-blue-400 hover:text-blue-300 text-lg leading-none px-1"
+                    title="Create new Virtual Collection"
+                  >
+                    +
+                  </button>
+                </div>
+                {collections.length > 0 ? collections.map(col => {
+                  const colColor = getColColor(col.color);
+                  const isCurrent = (activePaneIsRight ? rightCurrentPath : currentPath) === ('collection:' + col.id);
+                  const isDragOver = dragOverCollectionId === col.id;
+
+                  return (
+                    <div
+                      key={col.id}
+                      onClick={() => activeNavigate('collection:' + col.id)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        let x = e.clientX;
+                        let y = e.clientY;
+                        const estimatedMenuHeight = 190;
+                        if (y + estimatedMenuHeight > window.innerHeight - 8) {
+                          y = Math.max(8, e.clientY - estimatedMenuHeight);
+                        }
+                        if (ctx) closeCtx();
+                        if (driveCtx) closeDriveCtx();
+                        setCollectionCtx({ x, y, collection: col });
+                      }}
+                      onDragOver={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.dataTransfer.dropEffect = 'copy';
+                        setDragOverCollectionId(col.id);
+                      }}
+                      onDragLeave={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (dragOverCollectionId === col.id) {
+                          setDragOverCollectionId(null);
+                        }
+                      }}
+                      onDrop={(e) => handleDropToCollection(e, col.id)}
+                      className={`mx-1.5 px-2.5 py-1 rounded flex items-center gap-2 cursor-pointer transition-all ${
+                        isDragOver
+                          ? 'bg-blue-600/30 ring-1 ring-blue-400 scale-[1.01]'
+                          : isCurrent
+                            ? 'bg-zinc-800'
+                            : 'hover:bg-zinc-900'
+                      }`}
+                      title={`Virtual Collection: ${col.name} (${col.paths.length} items)\nRight-click for options. Drop files here to reference.`}
+                    >
+                      <Bookmark size={15} className={`${colColor.textClass} flex-shrink-0`} />
+                      <span className="flex-1 min-w-0 truncate text-zinc-200 font-medium">
+                        {col.name}
+                      </span>
+                      <span className="text-[10px] px-1.5 py-px rounded-full bg-zinc-800/90 text-zinc-400 flex-shrink-0 tabular-nums border border-zinc-700/50">
+                        {col.paths.length}
+                      </span>
+                    </div>
+                  );
+                }) : (
+                  <div className="mx-1.5 px-2.5 py-1 text-zinc-500 text-xs italic">
+                    No collections yet
+                  </div>
                 )}
 
                 <div className="flex-1" />
@@ -2699,10 +3151,28 @@ export default function App() {
                   <RefreshCw className="spinner mr-2" size={18} /> Loading…
                 </div>
               ) : visibleEntries.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-zinc-500 gap-2 pt-4">
-                  <Folder size={40} />
-                  <div>Empty folder{filter ? ' (no matches)' : ''}</div>
-                </div>
+                currentPath.startsWith('collection:') ? (
+                  <div className="h-full flex flex-col items-center justify-center text-zinc-400 gap-3 p-6 text-center max-w-sm mx-auto">
+                    <div className="w-14 h-14 rounded-2xl bg-violet-500/10 border border-violet-500/20 flex items-center justify-center text-violet-400 shadow-inner">
+                      <BookmarkPlus size={28} />
+                    </div>
+                    <div className="text-base font-semibold text-zinc-200">This Collection is Empty</div>
+                    <p className="text-xs text-zinc-400 leading-relaxed">
+                      Drag & drop files or folders here from other tabs, drives, or File Explorer to add references without moving them.
+                    </p>
+                    <button
+                      onClick={() => handlePickFilesForCollection(currentPath.slice('collection:'.length))}
+                      className="mt-1 px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium flex items-center gap-1.5 transition shadow-sm cursor-pointer"
+                    >
+                      <Plus size={14} /> Add files...
+                    </button>
+                  </div>
+                ) : (
+                  <div className="h-full flex flex-col items-center justify-center text-zinc-500 gap-2 pt-4">
+                    <Folder size={40} />
+                    <div>Empty folder{filter ? ' (no matches)' : ''}</div>
+                  </div>
+                )
               ) : viewMode === 'grid' ? (
                 <GridView
                   entries={visibleEntries}
@@ -2787,6 +3257,11 @@ export default function App() {
                               <div className="name-cell">
                                 {getIcon(entry)}
                                 <span className="truncate">{entry.name}</span>
+                                {entry.missing && (
+                                  <span className="text-[10px] px-1.5 py-px rounded bg-rose-950/70 text-rose-400 border border-rose-800/50 flex items-center gap-1 font-medium" title="Item not found on disk">
+                                    <AlertTriangle size={10} /> missing
+                                  </span>
+                                )}
                                 {entry.isDirectory && (entry.fileCount != null || entry.dirCount != null) && (
                                   <span className="text-[10px] px-1.5 py-px rounded bg-zinc-800 text-zinc-400 tabular-nums">
                                     {(entry.dirCount || 0) + (entry.fileCount || 0)} items
@@ -2885,10 +3360,28 @@ export default function App() {
                     <RefreshCw className="spinner mr-2" size={18} /> Loading…
                   </div>
                 ) : rightVisibleEntries.length === 0 ? (
-                  <div className="h-full flex flex-col items-center justify-center text-zinc-500 gap-2 pt-4">
-                    <Folder size={40} />
-                    <div>{splitMode === 'linked' && !selected ? 'Select a folder on the left to preview contents' : 'Empty'}</div>
-                  </div>
+                  rightCurrentPath.startsWith('collection:') ? (
+                    <div className="h-full flex flex-col items-center justify-center text-zinc-400 gap-3 p-6 text-center max-w-sm mx-auto">
+                      <div className="w-14 h-14 rounded-2xl bg-violet-500/10 border border-violet-500/20 flex items-center justify-center text-violet-400 shadow-inner">
+                        <BookmarkPlus size={28} />
+                      </div>
+                      <div className="text-base font-semibold text-zinc-200">This Collection is Empty</div>
+                      <p className="text-xs text-zinc-400 leading-relaxed">
+                        Drag & drop files or folders here from other tabs, drives, or File Explorer to add references without moving them.
+                      </p>
+                      <button
+                        onClick={() => handlePickFilesForCollection(rightCurrentPath.slice('collection:'.length))}
+                        className="mt-1 px-3.5 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-medium flex items-center gap-1.5 transition shadow-sm cursor-pointer"
+                      >
+                        <Plus size={14} /> Add files...
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="h-full flex flex-col items-center justify-center text-zinc-500 gap-2 pt-4">
+                      <Folder size={40} />
+                      <div>{splitMode === 'linked' && !selected ? 'Select a folder on the left to preview contents' : 'Empty'}</div>
+                    </div>
+                  )
                 ) : rightViewMode === 'grid' ? (
                   <GridView
                     entries={rightVisibleEntries}
@@ -2973,6 +3466,11 @@ export default function App() {
                                 <div className="name-cell">
                                   {getIcon(entry)}
                                   <span className="truncate">{entry.name}</span>
+                                  {entry.missing && (
+                                    <span className="text-[10px] px-1.5 py-px rounded bg-rose-950/70 text-rose-400 border border-rose-800/50 flex items-center gap-1 font-medium" title="Item not found on disk">
+                                      <AlertTriangle size={10} /> missing
+                                    </span>
+                                  )}
                                   {entry.isDirectory && (entry.fileCount != null || entry.dirCount != null) && (
                                     <span className="text-[10px] px-1.5 py-px rounded bg-zinc-800 text-zinc-400 tabular-nums">
                                       {(entry.dirCount || 0) + (entry.fileCount || 0)} items
@@ -3073,42 +3571,89 @@ export default function App() {
         <div ref={menuRef} className="context-menu" style={{ left: ctx.x, top: ctx.y }}>
           {!ctx.entry ? (
             // Pane-level (empty space) menu
-            <>
-              <div className="context-menu-item" onClick={() => ctxAction('new-folder')}>
-                <Folder size={14} /> New folder
-              </div>
-              <div className="context-menu-item" onClick={() => ctxAction('pin-quick')}>
-                Add current folder to Quick Access
-              </div>
-              <div className="border-t border-zinc-700 my-0.5" />
-              <div className="context-menu-item" onClick={() => ctxAction('open-cmd')}>
-                Open Command Prompt here
-              </div>
-              <div className="context-menu-item" onClick={() => ctxAction('open-powershell')}>
-                Open PowerShell here
-              </div>
-              <div className="border-t border-zinc-700 my-0.5" />
-              <div className="context-menu-item" onClick={() => ctxAction('paste')}>
-                Paste
-              </div>
-              {clipboard && clipboard.paths.length > 0 && (
+            (activePaneIsRight ? rightCurrentPath : currentPath).startsWith('collection:') ? (
+              <>
                 <div
-                  className="context-menu-item text-amber-300 hover:text-amber-200"
+                  className="context-menu-item flex items-center gap-2"
                   onClick={() => {
-                    const target = activePaneIsRight ? rightCurrentPath : currentPath;
+                    const colId = (activePaneIsRight ? rightCurrentPath : currentPath).slice('collection:'.length);
+                    handlePickFilesForCollection(colId);
                     closeCtx();
-                    setElevationPrompt({
-                      sources: clipboard.paths,
-                      target,
-                      isMove: clipboard.isCut,
-                    });
                   }}
                 >
-                  <ShieldAlert size={14} className="text-amber-400" />
-                  <span>Paste as Administrator</span>
+                  <Plus size={14} className="text-blue-400" />
+                  <span>Add files from disk...</span>
                 </div>
-              )}
-            </>
+                <div
+                  className="context-menu-item flex items-center gap-2"
+                  onClick={() => {
+                    const colId = (activePaneIsRight ? rightCurrentPath : currentPath).slice('collection:'.length);
+                    cleanMissingFromCollection(colId);
+                    closeCtx();
+                  }}
+                >
+                  <RefreshCw size={14} className="text-zinc-400" />
+                  <span>Clean missing items</span>
+                </div>
+                <div
+                  className="context-menu-item flex items-center gap-2"
+                  onClick={() => {
+                    const colId = (activePaneIsRight ? rightCurrentPath : currentPath).slice('collection:'.length);
+                    const col = collections.find(c => c.id === colId);
+                    if (col) {
+                      setCollectionModal({
+                        isOpen: true,
+                        mode: 'edit',
+                        collectionId: col.id,
+                        name: col.name,
+                        color: col.color || 'violet',
+                      });
+                    }
+                    closeCtx();
+                  }}
+                >
+                  <Edit3 size={14} className="text-amber-400" />
+                  <span>Edit Collection</span>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="context-menu-item" onClick={() => ctxAction('new-folder')}>
+                  <Folder size={14} /> New folder
+                </div>
+                <div className="context-menu-item" onClick={() => ctxAction('pin-quick')}>
+                  Add current folder to Quick Access
+                </div>
+                <div className="border-t border-zinc-700 my-0.5" />
+                <div className="context-menu-item" onClick={() => ctxAction('open-cmd')}>
+                  Open Command Prompt here
+                </div>
+                <div className="context-menu-item" onClick={() => ctxAction('open-powershell')}>
+                  Open PowerShell here
+                </div>
+                <div className="border-t border-zinc-700 my-0.5" />
+                <div className="context-menu-item" onClick={() => ctxAction('paste')}>
+                  Paste
+                </div>
+                {clipboard && clipboard.paths.length > 0 && (
+                  <div
+                    className="context-menu-item text-amber-300 hover:text-amber-200"
+                    onClick={() => {
+                      const target = activePaneIsRight ? rightCurrentPath : currentPath;
+                      closeCtx();
+                      setElevationPrompt({
+                        sources: clipboard.paths,
+                        target,
+                        isMove: clipboard.isCut,
+                      });
+                    }}
+                  >
+                    <ShieldAlert size={14} className="text-amber-400" />
+                    <span>Paste as Administrator</span>
+                  </div>
+                )}
+              </>
+            )
           ) : (
             // Row menu
             <>
@@ -3124,6 +3669,80 @@ export default function App() {
                   <span>Save as...</span>
                 </div>
               )}
+              <div className="border-t border-zinc-700 my-0.5" />
+
+              {/* Virtual Collection Actions */}
+              {(activePaneIsRight ? rightCurrentPath : currentPath).startsWith('collection:') && (
+                <div
+                  className="context-menu-item text-rose-400 hover:text-rose-300 flex items-center gap-2"
+                  onClick={() => {
+                    const colId = (activePaneIsRight ? rightCurrentPath : currentPath).slice('collection:'.length);
+                    removePathFromCollection(colId, ctx.entry!.path);
+                    closeCtx();
+                  }}
+                >
+                  <Trash2 size={14} className="text-rose-400" />
+                  <span>Remove from Collection</span>
+                </div>
+              )}
+
+              <div
+                className="relative"
+                onMouseEnter={() => setSubmenuOpen('collection')}
+              >
+                <div className="context-menu-item flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <BookmarkPlus size={14} className="text-violet-400" />
+                    <span>Add to Collection</span>
+                  </div>
+                  <ChevronRight size={12} className="text-zinc-500" />
+                </div>
+                {submenuOpen === 'collection' && (
+                  <div
+                    className="absolute left-full top-0 ml-1 min-w-[170px] bg-[#18181b] border border-zinc-700/80 rounded-md shadow-2xl py-1 z-50 text-xs"
+                    onMouseLeave={() => setSubmenuOpen(null)}
+                  >
+                    {collections.map(c => {
+                      const colColor = getColColor(c.color);
+                      const alreadyIn = c.paths.some(p => p.toLowerCase() === ctx.entry!.path.toLowerCase());
+                      return (
+                        <div
+                          key={c.id}
+                          className={`context-menu-item flex items-center justify-between ${alreadyIn ? 'text-zinc-500' : ''}`}
+                          onClick={() => {
+                            addPathsToCollection(c.id, [ctx.entry!.path]);
+                            closeCtx();
+                          }}
+                        >
+                          <div className="flex items-center gap-2 truncate">
+                            <span className={`w-2 h-2 rounded-full ${colColor.bgClass} flex-shrink-0`} />
+                            <span className="truncate">{c.name}</span>
+                          </div>
+                          {alreadyIn && <BookmarkCheck size={12} className="text-emerald-400 flex-shrink-0 ml-1" />}
+                        </div>
+                      );
+                    })}
+                    <div className="border-t border-zinc-700 my-0.5" />
+                    <div
+                      className="context-menu-item flex items-center gap-2 text-blue-400 hover:text-blue-300 font-medium"
+                      onClick={() => {
+                        setPendingAddPaths([ctx.entry!.path]);
+                        setCollectionModal({
+                          isOpen: true,
+                          mode: 'create',
+                          name: '',
+                          color: 'violet',
+                        });
+                        closeCtx();
+                      }}
+                    >
+                      <Plus size={13} />
+                      <span>New Collection...</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div className="border-t border-zinc-700 my-0.5" />
               {ctx.entry.isDirectory && (
                 <div className="context-menu-item" onClick={() => ctxAction('calc')}>
@@ -3206,6 +3825,75 @@ export default function App() {
             closeDriveCtx();
           }}>
             Copy path
+          </div>
+        </div>
+      )}
+
+      {/* Virtual Collection context menu for sidebar entries */}
+      {collectionCtx && (
+        <div ref={collectionMenuRef} className="context-menu" style={{ left: collectionCtx.x, top: collectionCtx.y }}>
+          <div
+            className="context-menu-item flex items-center gap-2"
+            onClick={() => {
+              activeNavigate('collection:' + collectionCtx.collection.id);
+              setCollectionCtx(null);
+            }}
+          >
+            <Folder size={14} className="text-blue-400" />
+            <span>Open Collection</span>
+          </div>
+          <div
+            className="context-menu-item flex items-center gap-2"
+            onClick={() => {
+              const colId = collectionCtx.collection.id;
+              setCollectionCtx(null);
+              handlePickFilesForCollection(colId);
+            }}
+          >
+            <Plus size={14} className="text-emerald-400" />
+            <span>Add Files from Disk...</span>
+          </div>
+          <div
+            className="context-menu-item flex items-center gap-2"
+            onClick={() => {
+              const col = collectionCtx.collection;
+              setCollectionModal({
+                isOpen: true,
+                mode: 'edit',
+                collectionId: col.id,
+                name: col.name,
+                color: col.color || 'violet',
+              });
+              setCollectionCtx(null);
+            }}
+          >
+            <Edit3 size={14} className="text-amber-400" />
+            <span>Edit Name & Color</span>
+          </div>
+          <div
+            className="context-menu-item flex items-center gap-2"
+            onClick={() => {
+              const colId = collectionCtx.collection.id;
+              cleanMissingFromCollection(colId);
+              setCollectionCtx(null);
+            }}
+          >
+            <RefreshCw size={14} className="text-zinc-400" />
+            <span>Clean Missing Items</span>
+          </div>
+          <div className="border-t border-zinc-700 my-0.5" />
+          <div
+            className="context-menu-item text-rose-400 hover:text-rose-300 flex items-center gap-2"
+            onClick={() => {
+              const col = collectionCtx.collection;
+              setCollectionCtx(null);
+              if (window.confirm(`Delete virtual collection "${col.name}"? (Files on disk will NOT be touched)`)) {
+                deleteCollection(col.id);
+              }
+            }}
+          >
+            <Trash2 size={14} className="text-rose-400" />
+            <span>Delete Collection</span>
           </div>
         </div>
       )}
@@ -3584,6 +4272,98 @@ export default function App() {
                 className="px-4 py-1.5 bg-zinc-600 hover:bg-zinc-500 text-white rounded cursor-pointer font-medium"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Create / Edit Collection Modal */}
+      {collectionModal.isOpen && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[10001] flex items-center justify-center p-4">
+          <div className="bg-[#18181b] border border-zinc-700/80 rounded-xl shadow-2xl w-full max-w-sm p-5 flex flex-col gap-4 text-zinc-100">
+            <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+              <div className="flex items-center gap-2">
+                <Bookmark className="text-violet-400" size={18} />
+                <h3 className="font-semibold text-sm">
+                  {collectionModal.mode === 'create' ? 'Create Virtual Collection' : 'Edit Collection'}
+                </h3>
+              </div>
+              <button
+                onClick={() => {
+                  setCollectionModal(prev => ({ ...prev, isOpen: false }));
+                  setPendingAddPaths(null);
+                }}
+                className="text-zinc-400 hover:text-zinc-200 p-1 rounded-md hover:bg-zinc-800"
+              >
+                <X size={15} />
+              </button>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[11px] font-medium text-zinc-400">Collection Name</label>
+              <input
+                autoFocus
+                type="text"
+                value={collectionModal.name}
+                placeholder="e.g. Invoices, 3D Assets, Best Photos..."
+                onChange={e => setCollectionModal(prev => ({ ...prev, name: e.target.value }))}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') saveCollectionModal();
+                  if (e.key === 'Escape') {
+                    setCollectionModal(prev => ({ ...prev, isOpen: false }));
+                    setPendingAddPaths(null);
+                  }
+                }}
+                className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
+              />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[11px] font-medium text-zinc-400">Badge Color</label>
+              <div className="flex items-center gap-2.5 pt-0.5">
+                {COLLECTION_COLORS.map(col => {
+                  const isSelected = collectionModal.color === col.key;
+                  return (
+                    <button
+                      key={col.key}
+                      type="button"
+                      onClick={() => setCollectionModal(prev => ({ ...prev, color: col.key }))}
+                      className={`w-6 h-6 rounded-full ${col.bgClass} flex items-center justify-center transition-all cursor-pointer ${
+                        isSelected ? 'ring-2 ring-white ring-offset-2 ring-offset-[#18181b] scale-110' : 'opacity-70 hover:opacity-100 hover:scale-105'
+                      }`}
+                      title={col.label}
+                    >
+                      {isSelected && <span className="w-1.5 h-1.5 rounded-full bg-white shadow-xs" />}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {pendingAddPaths && pendingAddPaths.length > 0 && (
+              <div className="text-[11px] text-zinc-400 bg-zinc-900/60 p-2.5 rounded-lg border border-zinc-800/80">
+                Will add <span className="text-zinc-200 font-semibold">{pendingAddPaths.length}</span> item(s) to this collection.
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-zinc-800">
+              <button
+                type="button"
+                onClick={() => {
+                  setCollectionModal(prev => ({ ...prev, isOpen: false }));
+                  setPendingAddPaths(null);
+                }}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={saveCollectionModal}
+                className="px-4 py-1.5 rounded-lg text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white shadow-sm transition cursor-pointer"
+              >
+                {collectionModal.mode === 'create' ? 'Create' : 'Save'}
               </button>
             </div>
           </div>

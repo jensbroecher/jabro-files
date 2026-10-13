@@ -724,6 +724,39 @@ r.handle("perform-elevated-op", async (e, t) => z(t)), r.handle("copy-files", as
 		title: "Open folder"
 	});
 	return e.canceled || e.filePaths.length === 0 ? null : e.filePaths[0];
+}), r.handle("select-files", async () => {
+	if (!w) return [];
+	let e = await n.showOpenDialog(w, {
+		properties: ["openFile", "multiSelections"],
+		title: "Select files to add to collection"
+	});
+	return e.canceled || e.filePaths.length === 0 ? [] : e.filePaths;
+}), r.handle("get-entries-stats", async (e, t) => {
+	if (!Array.isArray(t)) return [];
+	let n = [];
+	for (let e of t) if (!(!e || typeof e != "string")) try {
+		let t = await u.stat(e), r = t.isDirectory(), i = l.basename(e) || e, a = r ? void 0 : l.extname(i).toLowerCase() || void 0;
+		n.push({
+			name: i,
+			path: e,
+			isDirectory: r,
+			mtime: t.mtime.toISOString(),
+			size: r ? void 0 : t.size,
+			ext: a
+		});
+	} catch {
+		let t = l.basename(e) || e, r = l.extname(t).toLowerCase() || void 0;
+		n.push({
+			name: t,
+			path: e,
+			isDirectory: !1,
+			mtime: (/* @__PURE__ */ new Date()).toISOString(),
+			size: 0,
+			ext: r,
+			missing: !0
+		});
+	}
+	return n;
 }), r.handle("save-file-as", async (e, t) => {
 	if (!w) return { canceled: !0 };
 	try {

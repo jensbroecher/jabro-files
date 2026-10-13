@@ -13,6 +13,7 @@ export interface DirEntry {
   dirCount?: number;
   mtime: string;
   ext?: string;
+  missing?: boolean;
 }
 
 export interface SizeResult {
@@ -560,6 +561,8 @@ export const GridView: React.FC<GridViewProps> = ({
                       <span>{formatSize(displayedSize)}</span>
                       {displayedSize == null && <Calculator size={10} className="text-blue-400" />}
                     </div>
+                  ) : entry.missing ? (
+                    <span className="text-[10px] text-rose-400 font-semibold px-1 py-0.5 rounded bg-rose-950/60 border border-rose-800/40">Missing</span>
                   ) : (
                     <span>{formatSize(entry.size)}</span>
                   )}
