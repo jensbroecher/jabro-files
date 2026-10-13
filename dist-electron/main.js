@@ -871,7 +871,8 @@ try {
 }
 var V = new Set(/* @__PURE__ */ ".png,.jpg,.jpeg,.webp,.bmp,.gif,.ico,.svg,.tif,.tiff,.jfif,.avif,.mp4,.mov,.mkv,.avi,.wmv,.webm,.m4v,.flv,.pdf,.glb,.gltf,.obj,.stl,.ply,.fbx,.splat,.ksplat,.spz".split(","));
 function H(e, t, n) {
-	return m.createHash("sha256").update(`${e}:${t}:${n || 0}:256`).digest("hex");
+	let r = l.normalize(e).toLowerCase();
+	return m.createHash("sha256").update(`${r}:${t}:${n || 0}:256`).digest("hex");
 }
 function U(e) {
 	return `jabro-media://localhost?path=${encodeURIComponent(e)}`;

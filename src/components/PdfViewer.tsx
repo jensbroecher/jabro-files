@@ -24,6 +24,63 @@ interface PdfViewerProps {
   fileName: string;
 }
 
+// Individual page preview thumbnail renderer for sidebar
+const PdfThumbnailItem: React.FC<{
+  pdfDoc: pdfjsLib.PDFDocumentProxy;
+  pageNum: number;
+  isSelected: boolean;
+  onClick: () => void;
+}> = ({ pdfDoc, pageNum, isSelected, onClick }) => {
+  const [thumbUrl, setThumbUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const page = await pdfDoc.getPage(pageNum);
+        if (cancelled) return;
+        const viewport = page.getViewport({ scale: 0.22 });
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.floor(viewport.width));
+        canvas.height = Math.max(1, Math.floor(viewport.height));
+        const ctx = canvas.getContext('2d');
+        if (ctx) {
+          ctx.fillStyle = '#ffffff';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          await page.render({ canvasContext: ctx, viewport }).promise;
+          if (!cancelled) {
+            setThumbUrl(canvas.toDataURL('image/jpeg', 0.75));
+          }
+        }
+      } catch {
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [pdfDoc, pageNum]);
+
+  return (
+    <button
+      onClick={onClick}
+      className={`flex flex-col items-center p-2 rounded-lg transition border cursor-pointer ${
+        isSelected
+          ? 'bg-rose-500/15 border-rose-500/50 text-rose-300 ring-1 ring-rose-500/30'
+          : 'bg-[#101012] border-zinc-800/60 hover:border-zinc-700 text-zinc-400 hover:text-zinc-200'
+      }`}
+    >
+      <div className="w-20 h-28 bg-white/5 rounded border border-zinc-700/40 flex items-center justify-center overflow-hidden shadow-xs">
+        {thumbUrl ? (
+          <img src={thumbUrl} alt={`Page ${pageNum}`} className="w-full h-full object-contain bg-white" />
+        ) : (
+          <FileText size={20} className={isSelected ? 'text-rose-400' : 'text-zinc-600'} />
+        )}
+      </div>
+      <span className="text-[11px] font-mono mt-1 font-medium">Page {pageNum}</span>
+    </button>
+  );
+};
+
 export const PdfViewer: React.FC<PdfViewerProps> = ({ filePath, fileName }) => {
   const [pdfDoc, setPdfDoc] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
   const [numPages, setNumPages] = useState<number>(0);
@@ -202,12 +259,41 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({ filePath, fileName }) => {
       renderTaskRef.current = task;
       await task.promise;
       renderTaskRef.current = null;
+
+      // Auto-save rendered preview of page 1 to central thumbnail cache
+      if (currentPage === 1 && (window as any).api?.saveThumbnailCache) {
+        try {
+          const maxDim = 256;
+          const origW = canvas.width;
+          const origH = canvas.height;
+          const scaleFactor = Math.min(maxDim / origW, maxDim / origH);
+          const thumbCanvas = document.createElement('canvas');
+          thumbCanvas.width = Math.max(1, Math.floor(origW * scaleFactor));
+          thumbCanvas.height = Math.max(1, Math.floor(origH * scaleFactor));
+          const tctx = thumbCanvas.getContext('2d');
+          if (tctx) {
+            tctx.fillStyle = '#ffffff';
+            tctx.fillRect(0, 0, thumbCanvas.width, thumbCanvas.height);
+            tctx.drawImage(canvas, 0, 0, thumbCanvas.width, thumbCanvas.height);
+            const dataUrl = thumbCanvas.toDataURL('image/jpeg', 0.85);
+            (window as any).api.saveThumbnailCache(filePath, dataUrl).then((ok: boolean) => {
+              if (ok) {
+                window.dispatchEvent(
+                  new CustomEvent('jabro-thumbnail-saved', {
+                    detail: { filePath },
+                  })
+                );
+              }
+            });
+          }
+        } catch {}
+      }
     } catch (err: any) {
       if (err?.name !== 'RenderingCancelledException') {
         console.error('[PdfViewer] Page render error:', err);
       }
     }
-  }, [pdfDoc, currentPage, scale, rotation, viewMode]);
+  }, [pdfDoc, currentPage, scale, rotation, viewMode, filePath]);
 
   useEffect(() => {
     if (viewMode === 'single') {
@@ -248,6 +334,34 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({ filePath, fileName }) => {
           };
 
           await page.render(renderContext).promise;
+
+          if (i === 1 && (window as any).api?.saveThumbnailCache) {
+            try {
+              const maxDim = 256;
+              const origW = canvas.width;
+              const origH = canvas.height;
+              const scaleFactor = Math.min(maxDim / origW, maxDim / origH);
+              const thumbCanvas = document.createElement('canvas');
+              thumbCanvas.width = Math.max(1, Math.floor(origW * scaleFactor));
+              thumbCanvas.height = Math.max(1, Math.floor(origH * scaleFactor));
+              const tctx = thumbCanvas.getContext('2d');
+              if (tctx) {
+                tctx.fillStyle = '#ffffff';
+                tctx.fillRect(0, 0, thumbCanvas.width, thumbCanvas.height);
+                tctx.drawImage(canvas, 0, 0, thumbCanvas.width, thumbCanvas.height);
+                const dataUrl = thumbCanvas.toDataURL('image/jpeg', 0.85);
+                (window as any).api.saveThumbnailCache(filePath, dataUrl).then((ok: boolean) => {
+                  if (ok) {
+                    window.dispatchEvent(
+                      new CustomEvent('jabro-thumbnail-saved', {
+                        detail: { filePath },
+                      })
+                    );
+                  }
+                });
+              }
+            } catch {}
+          }
         } catch (e: any) {
           if (e?.name !== 'RenderingCancelledException') {
             console.error('[PdfViewer] Continuous render page error:', i, e);
@@ -486,8 +600,11 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({ filePath, fileName }) => {
               Pages ({numPages})
             </div>
             {Array.from({ length: numPages }, (_, i) => i + 1).map((p) => (
-              <button
+              <PdfThumbnailItem
                 key={p}
+                pdfDoc={pdfDoc!}
+                pageNum={p}
+                isSelected={currentPage === p}
                 onClick={() => {
                   setCurrentPage(p);
                   if (viewMode === 'continuous') {
@@ -495,17 +612,7 @@ export const PdfViewer: React.FC<PdfViewerProps> = ({ filePath, fileName }) => {
                     el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
                   }
                 }}
-                className={`flex flex-col items-center p-2 rounded-lg transition border ${
-                  currentPage === p
-                    ? 'bg-rose-500/15 border-rose-500/50 text-rose-300'
-                    : 'bg-[#101012] border-zinc-800/60 hover:border-zinc-700 text-zinc-400 hover:text-zinc-200'
-                }`}
-              >
-                <div className="w-20 h-28 bg-[#202024] rounded border border-zinc-700/40 flex items-center justify-center text-xs shadow-inner">
-                  <FileText size={20} className={currentPage === p ? 'text-rose-400' : 'text-zinc-600'} />
-                </div>
-                <span className="text-[11px] font-mono mt-1 font-medium">Page {p}</span>
-              </button>
+              />
             ))}
           </div>
         )}

@@ -23,8 +23,9 @@ export const BackgroundPdfSnapshotGenerator: React.FC<BackgroundPdfSnapshotGener
   const isProcessingRef = useRef<boolean>(false);
   const totalBatchRef = useRef<number>(0);
   const processedBatchRef = useRef<number>(0);
+  const sharedWorkerRef = useRef<ReturnType<typeof createDedicatedPdfWorker>>(null);
 
-  // Clean up any pending status when unmounting
+  // Clean up any pending status and shared worker when unmounting
   useEffect(() => {
     return () => {
       try {
@@ -34,8 +35,25 @@ export const BackgroundPdfSnapshotGenerator: React.FC<BackgroundPdfSnapshotGener
           })
         );
       } catch {}
+
+      if (sharedWorkerRef.current) {
+        try {
+          sharedWorkerRef.current.pdfWorker.destroy();
+        } catch {}
+        try {
+          sharedWorkerRef.current.workerInstance.terminate();
+        } catch {}
+        sharedWorkerRef.current = null;
+      }
     };
   }, []);
+
+  const getOrCreateWorker = () => {
+    if (!sharedWorkerRef.current) {
+      sharedWorkerRef.current = createDedicatedPdfWorker();
+    }
+    return sharedWorkerRef.current;
+  };
 
   const processQueue = async () => {
     if (isProcessingRef.current) return;
@@ -81,12 +99,17 @@ export const BackgroundPdfSnapshotGenerator: React.FC<BackgroundPdfSnapshotGener
 
           const timeoutId = setTimeout(() => {
             console.warn('[BackgroundPdfSnapshotGenerator] PDF thumbnail timed out for:', filePath);
+            // Invalidate worker in case it locked up
+            if (sharedWorkerRef.current) {
+              try { sharedWorkerRef.current.pdfWorker.destroy(); } catch {}
+              try { sharedWorkerRef.current.workerInstance.terminate(); } catch {}
+              sharedWorkerRef.current = null;
+            }
             finish();
           }, 8000);
 
           (async () => {
             let doc: pdfjsLib.PDFDocumentProxy | null = null;
-            let workerObj: ReturnType<typeof createDedicatedPdfWorker> = null;
 
             try {
               let pdfData: Uint8Array | null = null;
@@ -115,7 +138,7 @@ export const BackgroundPdfSnapshotGenerator: React.FC<BackgroundPdfSnapshotGener
                 return;
               }
 
-              workerObj = createDedicatedPdfWorker();
+              const workerObj = getOrCreateWorker();
               const loadingTask = pdfjsLib.getDocument({
                 data: pdfData,
                 worker: workerObj ? workerObj.pdfWorker : undefined,
@@ -136,7 +159,7 @@ export const BackgroundPdfSnapshotGenerator: React.FC<BackgroundPdfSnapshotGener
               const ctx = canvas.getContext('2d');
 
               if (ctx) {
-                // Fill clean crisp white paper background
+                // Clean crisp white paper background
                 ctx.fillStyle = '#ffffff';
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -164,9 +187,6 @@ export const BackgroundPdfSnapshotGenerator: React.FC<BackgroundPdfSnapshotGener
               if (doc) {
                 try { doc.destroy(); } catch {}
               }
-              if (workerObj) {
-                try { workerObj.pdfWorker.destroy(); } catch {}
-              }
               finish();
             }
           })();
@@ -175,8 +195,8 @@ export const BackgroundPdfSnapshotGenerator: React.FC<BackgroundPdfSnapshotGener
         console.warn('[BackgroundPdfSnapshotGenerator] Queue item error:', filePath, err);
       }
 
-      // Small 25ms yield to keep browser thread completely buttery smooth
-      await new Promise((r) => setTimeout(r, 25));
+      // Small 20ms yield to keep UI silky smooth
+      await new Promise((r) => setTimeout(r, 20));
     }
 
     isProcessingRef.current = false;
@@ -205,7 +225,7 @@ export const BackgroundPdfSnapshotGenerator: React.FC<BackgroundPdfSnapshotGener
 
     if (pdfEntries.length === 0) return;
 
-    // Check which ones are already cached
+    // Check which ones are already cached on disk
     (async () => {
       let uncachedList = pdfEntries;
       if (api.getThumbnailsBatch) {
@@ -218,7 +238,7 @@ export const BackgroundPdfSnapshotGenerator: React.FC<BackgroundPdfSnapshotGener
             }))
           );
           uncachedList = pdfEntries.filter((e) => !cachedMap[e.path]);
-          // Mark already cached items as processed
+          // Mark already cached items as processed so we never do redundant work
           for (const e of pdfEntries) {
             if (cachedMap[e.path]) {
               processedPathsRef.current.add(e.path);

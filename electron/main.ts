@@ -1520,7 +1520,8 @@ const PREVIEWABLE_EXTENSIONS = new Set([
 ]);
 
 function getThumbnailCacheKey(filePath: string, mtime: string, size?: number): string {
-  return crypto.createHash('sha256').update(`${filePath}:${mtime}:${size || 0}:256`).digest('hex');
+  const normPath = path.normalize(filePath).toLowerCase();
+  return crypto.createHash('sha256').update(`${normPath}:${mtime}:${size || 0}:256`).digest('hex');
 }
 
 function getCachedThumbnailUrl(cachedPath: string): string {
