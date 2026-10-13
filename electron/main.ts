@@ -17,6 +17,10 @@ const __dirname = path.dirname(__filename);
 // Enable SharedArrayBuffer feature for WebAssembly workers and allow local file access
 app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
 app.commandLine.appendSwitch('allow-file-access-from-files');
+// Disable Chromium geolocation and background networking subsystems completely so Windows 11 never prompts for Location/Wi-Fi
+app.commandLine.appendSwitch('disable-geolocation');
+app.commandLine.appendSwitch('disable-background-networking');
+app.commandLine.appendSwitch('disable-features', 'Geolocation,WebBluetooth,WebUSB,MediaRouter');
 
 // Register privileged custom scheme for streaming local media, PDFs, and 3D assets
 protocol.registerSchemesAsPrivileged([
@@ -119,7 +123,6 @@ function createWindow() {
       preload: getPreloadPath(),
       contextIsolation: true,
       nodeIntegration: false,
-      plugins: true, // Enables Chromium's built-in PDF viewer plugin
       webSecurity: false, // Ensures local WASM, Draco workers, and textures load without origin restrictions
     },
   };
@@ -193,14 +196,31 @@ function createWindow() {
 
 app.whenReady().then(() => {
   // Enable Cross-Origin Isolation for high-performance zero-copy WebAssembly multi-threading (used by Gaussian Splatting)
+  // Use 'credentialless' on mainFrame only so embedded subframes (such as Chromium's built-in PDF viewer) are not blocked with ERR_BLOCKED_BY_RESPONSE
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-    callback({
-      responseHeaders: {
-        ...details.responseHeaders,
-        'Cross-Origin-Opener-Policy': ['same-origin'],
-        'Cross-Origin-Embedder-Policy': ['require-corp'],
-      },
-    });
+    const responseHeaders = { ...details.responseHeaders };
+    if (details.resourceType === 'mainFrame' && !details.url.startsWith('chrome-extension:')) {
+      responseHeaders['Cross-Origin-Opener-Policy'] = ['same-origin'];
+      responseHeaders['Cross-Origin-Embedder-Policy'] = ['credentialless'];
+    }
+    callback({ responseHeaders });
+  });
+
+  // Deny geolocation and sensor permissions so Windows 11 never prompts the user for location access
+  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+    const perm = permission as string;
+    if (['geolocation', 'geolocation-approximate', 'sensors', 'notifications', 'media'].includes(perm)) {
+      return callback(false);
+    }
+    callback(true);
+  });
+
+  session.defaultSession.setPermissionCheckHandler((_webContents, permission) => {
+    const perm = permission as string;
+    if (['geolocation', 'geolocation-approximate', 'sensors', 'notifications', 'media'].includes(perm)) {
+      return false;
+    }
+    return true;
   });
 
   // Protocol handler for streaming local assets, 3D models, Gaussian splats, and PDFs
@@ -261,16 +281,31 @@ app.whenReady().then(() => {
       let nodeStream: any;
 
       if (range) {
-        const parts = range.replace(/bytes=/, '').split('-');
-        const start = parseInt(parts[0], 10);
-        const end = parts[1] ? parseInt(parts[1], 10) : stat.size - 1;
-        if (!isNaN(start) && start < stat.size) {
-          const chunkEnd = Math.min(end, stat.size - 1);
-          const chunkLength = chunkEnd - start + 1;
-          headers.set('content-length', chunkLength.toString());
-          headers.set('content-range', `bytes ${start}-${chunkEnd}/${stat.size}`);
-          status = 206;
-          nodeStream = fsSync.createReadStream(targetPath, { start, end: chunkEnd });
+        const match = /bytes=(\d*)-(\d*)/.exec(range);
+        if (match) {
+          let start: number;
+          let end: number;
+          if (match[1] === '') {
+            // Suffix range: bytes=-500 (last 500 bytes)
+            const suffix = parseInt(match[2], 10);
+            start = Math.max(0, stat.size - suffix);
+            end = stat.size - 1;
+          } else {
+            start = parseInt(match[1], 10);
+            end = match[2] ? parseInt(match[2], 10) : stat.size - 1;
+          }
+
+          if (!isNaN(start) && start < stat.size) {
+            const chunkEnd = Math.min(isNaN(end) ? stat.size - 1 : end, stat.size - 1);
+            const chunkLength = chunkEnd - start + 1;
+            headers.set('content-length', chunkLength.toString());
+            headers.set('content-range', `bytes ${start}-${chunkEnd}/${stat.size}`);
+            status = 206;
+            nodeStream = fsSync.createReadStream(targetPath, { start, end: chunkEnd });
+          } else {
+            headers.set('content-length', stat.size.toString());
+            nodeStream = fsSync.createReadStream(targetPath);
+          }
         } else {
           headers.set('content-length', stat.size.toString());
           nodeStream = fsSync.createReadStream(targetPath);
@@ -1371,6 +1406,15 @@ ipcMain.handle('read-text-file', async (_e, filePath: string): Promise<string> =
     return await fs.readFile(filePath, 'utf8');
   } catch (err) {
     return '[Unable to read file as text.]';
+  }
+});
+
+ipcMain.handle('read-binary-file', async (_e, filePath: string): Promise<Buffer | null> => {
+  try {
+    return await fs.readFile(filePath);
+  } catch (err) {
+    console.error('read-binary-file failed:', err);
+    return null;
   }
 });
 

@@ -6,11 +6,13 @@ import {
   ShieldAlert, ShieldCheck, Box, Sparkles, FileText,
   Plus, ChevronRight, ChevronLeft, LayoutGrid, List, Flame, Edit3, ExternalLink, Eye, PieChart,
   Database, Trash2, PanelLeft, PanelLeftClose, PanelLeftOpen, Save,
-  Columns2, Link2, Layers
+  Columns2, Link2, Layers, Image, Video, Music, FileCode
 } from 'lucide-react';
 import { ThreeViewer } from './components/ThreeViewer';
+import { PdfViewer } from './components/PdfViewer';
 import { GridView } from './components/GridView';
 import { Background3DSnapshotGenerator } from './components/Background3DSnapshotGenerator';
+import { BackgroundPdfSnapshotGenerator } from './components/BackgroundPdfSnapshotGenerator';
 
 interface ToastInfo {
   id: string;
@@ -1637,8 +1639,13 @@ export default function App() {
         return;
       }
 
-      // Quick Look arrow navigation
+      // Quick Look navigation & escape
       if (viewer) {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setViewer(null);
+          return;
+        }
         if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
           e.preventDefault();
           navigateViewer(1);
@@ -3203,143 +3210,184 @@ export default function App() {
         </div>
       )}
 
-      {/* Integrated viewer modal for images, audio, video, text */}
+      {/* Integrated Fullscreen Viewer for PDF, 3D, Gaussian Splats, Images, Audio, Video, Code & Text */}
       {viewer && (
         <div
-          className="fixed inset-0 bg-black/70 z-[9999] flex items-center justify-center p-4"
-          onClick={() => setViewer(null)}
+          className="fixed inset-0 bg-[#0c0c0e] z-[9999] flex flex-col overflow-hidden select-none"
         >
-          <div
-            className="bg-[#18181b] border border-zinc-700 rounded-xl shadow-2xl max-w-[92vw] max-h-[92vh] w-full flex flex-col overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
+          {/* Top Control Header Bar (Integrated with Windows titlebar overlay) */}
+          <div 
+            className="h-10 box-border flex items-center justify-between px-3 bg-[#18181b] border-b border-zinc-800 text-sm select-none z-50 flex-shrink-0"
+            style={{ paddingRight: '145px', WebkitAppRegion: 'drag' } as any}
           >
-            <div className="flex items-center justify-between px-4 py-2.5 border-b border-zinc-700 bg-[#111113] text-sm">
-              <div className="flex items-center gap-2 truncate font-medium pr-4">
-                {viewer.type === 'pdf' && <FileText size={16} className="text-rose-400 flex-shrink-0" />}
-                {viewer.type === '3d' && <Box size={16} className="text-indigo-400 flex-shrink-0" />}
-                {viewer.type === 'gaussian-splat' && <Sparkles size={16} className="text-violet-400 flex-shrink-0" />}
-                <span className="truncate">{viewer.name}</span>
-                <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono uppercase">
-                  {viewer.type === 'gaussian-splat' ? 'Gaussian Splat' : viewer.type.toUpperCase()}
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={async () => {
-                    try {
-                      const res = await api.saveFileAs(viewer.path);
-                      if (res?.canceled) return;
-                      if (res?.success && res.destDir && res.destFileName) {
-                        showToast({
-                          type: 'success',
-                          title: 'File saved',
-                          message: `Saved "${res.destFileName}" in ${res.destDir}`,
-                        });
-                        const destDirLower = res.destDir.toLowerCase();
-                        if (currentPath.toLowerCase() === destDirLower) {
-                          loadDirectory(currentPath);
-                        }
-                        if (dualPane && rightCurrentPath.toLowerCase() === destDirLower) {
-                          loadRightDirectory(rightCurrentPath);
-                        }
-                      } else if (res?.requiresElevation && res.destDir) {
-                        setElevationPrompt({
-                          sources: [viewer.path],
-                          target: res.destDir,
-                          isMove: false,
-                          action: 'copy',
-                          customDestFileName: res.destFileName,
-                        });
-                      } else if (res?.error) {
-                        showToast({
-                          type: 'error',
-                          title: 'Save As failed',
-                          message: res.error,
-                        });
+            {/* Left side: Back button & File info */}
+            <div 
+              className="flex items-center gap-2 truncate font-medium pr-2 min-w-0"
+              style={{ WebkitAppRegion: 'no-drag' } as any}
+            >
+              <button
+                onClick={() => setViewer(null)}
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white transition cursor-pointer font-medium text-xs border border-zinc-700/60 flex-shrink-0"
+                title="Back to files (Esc)"
+              >
+                <ArrowLeft size={13} />
+                <span>Back</span>
+                <span className="text-[10px] px-1 py-0.5 bg-black/40 rounded text-zinc-400 font-mono">Esc</span>
+              </button>
+
+              <div className="h-4 w-px bg-zinc-700/70 mx-0.5 flex-shrink-0" />
+
+              {viewer.type === 'pdf' && <FileText size={16} className="text-rose-400 flex-shrink-0" />}
+              {viewer.type === '3d' && <Box size={16} className="text-indigo-400 flex-shrink-0" />}
+              {viewer.type === 'gaussian-splat' && <Sparkles size={16} className="text-violet-400 flex-shrink-0" />}
+              {viewer.type === 'image' && <Image size={16} className="text-emerald-400 flex-shrink-0" />}
+              {viewer.type === 'video' && <Video size={16} className="text-amber-400 flex-shrink-0" />}
+              {viewer.type === 'audio' && <Music size={16} className="text-cyan-400 flex-shrink-0" />}
+              {viewer.type === 'text' && <FileCode size={16} className="text-blue-400 flex-shrink-0" />}
+              
+              <span className="truncate text-zinc-100 font-semibold text-xs">{viewer.name}</span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-400 font-mono uppercase tracking-wider flex-shrink-0 border border-zinc-700/40">
+                {viewer.type === 'gaussian-splat' ? 'Gaussian Splat' : viewer.type.toUpperCase()}
+              </span>
+              <span className="hidden xl:inline-block text-[11px] text-zinc-500 truncate max-w-sm font-mono">
+                {viewer.path}
+              </span>
+            </div>
+
+            {/* Middle draggable gap */}
+            <div className="flex-1 h-full min-w-4" style={{ WebkitAppRegion: 'drag' } as any} />
+
+            {/* Right side: Actions & Prominent Close button (Safely placed to the left of the Windows titleBarOverlay buttons) */}
+            <div 
+              className="flex items-center gap-2 flex-shrink-0"
+              style={{ WebkitAppRegion: 'no-drag' } as any}
+            >
+              <button
+                onClick={async () => {
+                  try {
+                    const res = await api.saveFileAs(viewer.path);
+                    if (res?.canceled) return;
+                    if (res?.success && res.destDir && res.destFileName) {
+                      showToast({
+                        type: 'success',
+                        title: 'File saved',
+                        message: `Saved "${res.destFileName}" in ${res.destDir}`,
+                      });
+                      const destDirLower = res.destDir.toLowerCase();
+                      if (currentPath.toLowerCase() === destDirLower) {
+                        loadDirectory(currentPath);
                       }
-                    } catch (err: any) {
+                      if (dualPane && rightCurrentPath.toLowerCase() === destDirLower) {
+                        loadRightDirectory(rightCurrentPath);
+                      }
+                    } else if (res?.requiresElevation && res.destDir) {
+                      setElevationPrompt({
+                        sources: [viewer.path],
+                        target: res.destDir,
+                        isMove: false,
+                        action: 'copy',
+                        customDestFileName: res.destFileName,
+                      });
+                    } else if (res?.error) {
                       showToast({
                         type: 'error',
                         title: 'Save As failed',
-                        message: err?.message || String(err),
+                        message: res.error,
                       });
                     }
-                  }}
-                  className="text-xs px-2.5 py-1 bg-zinc-700 hover:bg-zinc-600 rounded text-zinc-200 transition cursor-pointer font-medium flex items-center gap-1.5"
-                  title="Save a copy of this file to another location or rename"
-                >
-                  <Save size={13} />
-                  <span>Save as...</span>
-                </button>
-                <button
-                  onClick={() => {
-                    api.openPath(viewer.path);
-                    setViewer(null);
-                  }}
-                  className="text-xs px-2.5 py-1 bg-zinc-700 hover:bg-zinc-600 rounded text-zinc-200 transition cursor-pointer font-medium"
-                >
-                  Open with default app
-                </button>
-                <button onClick={() => setViewer(null)} className="text-xl leading-none px-2 hover:text-red-400 cursor-pointer">×</button>
-              </div>
-            </div>
+                  } catch (err: any) {
+                    showToast({
+                      type: 'error',
+                      title: 'Save As failed',
+                      message: err?.message || String(err),
+                    });
+                  }
+                }}
+                className="text-xs px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-zinc-200 transition cursor-pointer font-medium flex items-center gap-1.5 border border-zinc-700/60"
+                title="Save a copy of this file to another location or rename"
+              >
+                <Save size={13} />
+                <span>Save as...</span>
+              </button>
 
-            <div className="flex-1 overflow-auto p-0 bg-[#0f0f10] flex items-center justify-center relative min-h-[500px]">
-              {viewer.type === 'image' && (
-                <div className="p-4 flex items-center justify-center w-full h-full">
-                  <img
-                    src={toFileUrl(viewer.path)}
-                    alt={viewer.name}
-                    className="max-w-full max-h-[78vh] object-contain shadow-2xl"
-                  />
-                </div>
-              )}
-              {viewer.type === 'audio' && (
-                <div className="p-8 flex items-center justify-center w-full">
+              <button
+                onClick={() => {
+                  api.openPath(viewer.path);
+                  setViewer(null);
+                }}
+                className="text-xs px-2.5 py-1 bg-zinc-800 hover:bg-zinc-700 rounded text-zinc-200 transition cursor-pointer font-medium border border-zinc-700/60"
+              >
+                Open with default app
+              </button>
+            </div>
+          </div>
+
+          {/* Fullscreen Content Area */}
+          <div className="flex-1 w-full h-full min-h-0 bg-[#0a0a0d] flex items-center justify-center relative overflow-hidden">
+            {viewer.type === 'image' && (
+              <div className="w-full h-full flex items-center justify-center p-4 overflow-hidden">
+                <img
+                  src={toFileUrl(viewer.path)}
+                  alt={viewer.name}
+                  className="max-w-full max-h-full object-contain select-none shadow-2xl"
+                />
+              </div>
+            )}
+            {viewer.type === 'audio' && (
+              <div className="w-full h-full flex flex-col items-center justify-center p-8 bg-[#0d0d12]">
+                <div className="p-8 rounded-2xl bg-[#16161c] border border-zinc-800 flex flex-col items-center gap-6 shadow-2xl max-w-md w-full">
+                  <div className="w-24 h-24 rounded-full bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400 shadow-inner">
+                    <Music size={40} />
+                  </div>
+                  <div className="text-center">
+                    <div className="font-semibold text-zinc-100 text-base">{viewer.name}</div>
+                    <div className="text-xs text-zinc-500 font-mono mt-1">{viewer.path}</div>
+                  </div>
                   <audio
-                    controls
-                    src={toFileUrl(viewer.path)}
-                    className="w-full max-w-md shadow-lg"
-                  />
-                </div>
-              )}
-              {viewer.type === 'video' && (
-                <div className="p-4 flex items-center justify-center w-full h-full">
-                  <video
                     controls
                     autoPlay
                     src={toFileUrl(viewer.path)}
-                    className="max-w-full max-h-[78vh] shadow-2xl rounded"
+                    className="w-full"
                   />
                 </div>
-              )}
-              {viewer.type === 'text' && (
-                <div className="p-4 w-full h-full flex justify-center">
-                  <pre className="whitespace-pre-wrap font-mono text-sm w-full max-w-4xl bg-[#111113] p-4 rounded overflow-auto max-h-[78vh] border border-zinc-800">
-                    {textContent || 'Loading...'}
-                  </pre>
-                </div>
-              )}
-              {viewer.type === 'pdf' && (
-                <div className="w-full h-[80vh] flex flex-col bg-[#242426] overflow-hidden">
-                  <iframe
-                    src={toMediaUrl(viewer.path)}
-                    title={viewer.name}
-                    className="w-full flex-1 border-0"
-                  />
-                </div>
-              )}
-              {(viewer.type === '3d' || viewer.type === 'gaussian-splat') && (
-                <div className="w-full h-[80vh] flex flex-col overflow-hidden">
-                  <ThreeViewer
-                    key={viewer.path}
-                    filePath={viewer.path}
-                    fileName={viewer.name}
-                    isGaussianSplat={viewer.type === 'gaussian-splat'}
-                  />
-                </div>
-              )}
-            </div>
+              </div>
+            )}
+            {viewer.type === 'video' && (
+              <div className="w-full h-full flex items-center justify-center p-4 bg-black">
+                <video
+                  controls
+                  autoPlay
+                  src={toFileUrl(viewer.path)}
+                  className="max-w-full max-h-full object-contain shadow-2xl"
+                />
+              </div>
+            )}
+            {viewer.type === 'text' && (
+              <div className="w-full h-full flex justify-center p-6 overflow-auto">
+                <pre className="whitespace-pre-wrap font-mono text-xs text-zinc-200 w-full max-w-6xl bg-[#141418] p-6 rounded-xl border border-zinc-800/80 shadow-2xl overflow-auto leading-relaxed h-full">
+                  {textContent || 'Loading...'}
+                </pre>
+              </div>
+            )}
+            {viewer.type === 'pdf' && (
+              <div className="w-full h-full flex flex-col overflow-hidden">
+                <PdfViewer
+                  key={viewer.path}
+                  filePath={viewer.path}
+                  fileName={viewer.name}
+                />
+              </div>
+            )}
+            {(viewer.type === '3d' || viewer.type === 'gaussian-splat') && (
+              <div className="w-full h-full flex flex-col overflow-hidden">
+                <ThreeViewer
+                  key={viewer.path}
+                  filePath={viewer.path}
+                  fileName={viewer.name}
+                  isGaussianSplat={viewer.type === 'gaussian-splat'}
+                />
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -3544,6 +3592,8 @@ export default function App() {
 
       {/* Invisible offscreen layer for generating 3D and Splat previews in background */}
       <Background3DSnapshotGenerator entries={dualPane ? [...entries, ...rightEntries] : entries} />
+      {/* Invisible background generator for automatic PDF previews */}
+      <BackgroundPdfSnapshotGenerator entries={dualPane ? [...entries, ...rightEntries] : entries} />
     </div>
   );
 }

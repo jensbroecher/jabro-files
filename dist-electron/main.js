@@ -10,7 +10,7 @@ import { promisify as _ } from "node:util";
 import { fileURLToPath as v } from "node:url";
 //#region electron/main.ts
 var y = _(h), b = v(import.meta.url), x = l.dirname(b);
-t.commandLine.appendSwitch("enable-features", "SharedArrayBuffer"), t.commandLine.appendSwitch("allow-file-access-from-files"), a.registerSchemesAsPrivileged([{
+t.commandLine.appendSwitch("enable-features", "SharedArrayBuffer"), t.commandLine.appendSwitch("allow-file-access-from-files"), t.commandLine.appendSwitch("disable-geolocation"), t.commandLine.appendSwitch("disable-background-networking"), t.commandLine.appendSwitch("disable-features", "Geolocation,WebBluetooth,WebUSB,MediaRouter"), a.registerSchemesAsPrivileged([{
 	scheme: "jabro-media",
 	privileges: {
 		standard: !0,
@@ -74,7 +74,6 @@ function O() {
 			preload: S(),
 			contextIsolation: !0,
 			nodeIntegration: !1,
-			plugins: !0,
 			webSecurity: !1
 		}
 	};
@@ -106,11 +105,27 @@ function O() {
 }
 t.whenReady().then(() => {
 	s.defaultSession.webRequest.onHeadersReceived((e, t) => {
-		t({ responseHeaders: {
-			...e.responseHeaders,
-			"Cross-Origin-Opener-Policy": ["same-origin"],
-			"Cross-Origin-Embedder-Policy": ["require-corp"]
-		} });
+		let n = { ...e.responseHeaders };
+		e.resourceType === "mainFrame" && !e.url.startsWith("chrome-extension:") && (n["Cross-Origin-Opener-Policy"] = ["same-origin"], n["Cross-Origin-Embedder-Policy"] = ["credentialless"]), t({ responseHeaders: n });
+	}), s.defaultSession.setPermissionRequestHandler((e, t, n) => {
+		let r = t;
+		if ([
+			"geolocation",
+			"geolocation-approximate",
+			"sensors",
+			"notifications",
+			"media"
+		].includes(r)) return n(!1);
+		n(!0);
+	}), s.defaultSession.setPermissionCheckHandler((e, t) => {
+		let n = t;
+		return ![
+			"geolocation",
+			"geolocation-approximate",
+			"sensors",
+			"notifications",
+			"media"
+		].includes(n);
 	}), a.handle("jabro-media", async (e) => {
 		let t = "";
 		try {
@@ -124,13 +139,20 @@ t.whenReady().then(() => {
 			i === ".pdf" ? o = "application/pdf" : i === ".jpg" || i === ".jpeg" ? o = "image/jpeg" : i === ".png" ? o = "image/png" : i === ".webp" ? o = "image/webp" : i === ".gif" ? o = "image/gif" : i === ".svg" ? o = "image/svg+xml" : i === ".bmp" ? o = "image/bmp" : i === ".ico" ? o = "image/x-icon" : i === ".tga" ? o = "image/x-tga" : i === ".dds" ? o = "image/vnd-ms.dds" : i === ".glb" ? o = "model/gltf-binary" : i === ".gltf" ? o = "model/gltf+json" : i === ".wasm" ? o = "application/wasm" : i === ".js" ? o = "application/javascript" : i === ".obj" ? o = "text/plain" : (i === ".stl" || i === ".ply" || i === ".splat" || i === ".ksplat" || i === ".spz" || i === ".fbx") && (o = "application/octet-stream"), o && a.set("content-type", o), a.set("access-control-allow-origin", "*"), a.set("access-control-expose-headers", "Content-Length, Content-Range, Accept-Ranges"), a.set("accept-ranges", "bytes"), a.set("Cross-Origin-Resource-Policy", "cross-origin");
 			let s = e.headers.get("range"), c = 200, p;
 			if (s) {
-				let e = s.replace(/bytes=/, "").split("-"), n = parseInt(e[0], 10), i = e[1] ? parseInt(e[1], 10) : r.size - 1;
-				if (!isNaN(n) && n < r.size) {
-					let e = Math.min(i, r.size - 1), o = e - n + 1;
-					a.set("content-length", o.toString()), a.set("content-range", `bytes ${n}-${e}/${r.size}`), c = 206, p = d.createReadStream(t, {
-						start: n,
-						end: e
-					});
+				let e = /bytes=(\d*)-(\d*)/.exec(s);
+				if (e) {
+					let n, i;
+					if (e[1] === "") {
+						let t = parseInt(e[2], 10);
+						n = Math.max(0, r.size - t), i = r.size - 1;
+					} else n = parseInt(e[1], 10), i = e[2] ? parseInt(e[2], 10) : r.size - 1;
+					if (!isNaN(n) && n < r.size) {
+						let e = Math.min(isNaN(i) ? r.size - 1 : i, r.size - 1), o = e - n + 1;
+						a.set("content-length", o.toString()), a.set("content-range", `bytes ${n}-${e}/${r.size}`), c = 206, p = d.createReadStream(t, {
+							start: n,
+							end: e
+						});
+					} else a.set("content-length", r.size.toString()), p = d.createReadStream(t);
 				} else a.set("content-length", r.size.toString()), p = d.createReadStream(t);
 			} else a.set("content-length", r.size.toString()), p = d.createReadStream(t);
 			let m = f.toWeb(p);
@@ -767,6 +789,12 @@ r.handle("perform-elevated-op", async (e, t) => z(t)), r.handle("copy-files", as
 		return (await u.stat(t)).size > 1024 * 1024 ? "[File too large to preview as text. Use \"Open with default app\".]" : await u.readFile(t, "utf8");
 	} catch {
 		return "[Unable to read file as text.]";
+	}
+}), r.handle("read-binary-file", async (e, t) => {
+	try {
+		return await u.readFile(t);
+	} catch (e) {
+		return console.error("read-binary-file failed:", e), null;
 	}
 }), r.handle("open-terminal", async (e, t, n = "cmd") => {
 	try {

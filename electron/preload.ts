@@ -123,6 +123,9 @@ const api = {
   readTextFile: (filePath: string): Promise<string> =>
     ipcRenderer.invoke('read-text-file', filePath),
 
+  readBinaryFile: (filePath: string): Promise<Uint8Array | null> =>
+    ipcRenderer.invoke('read-binary-file', filePath),
+
   detectPlyType: (filePath: string): Promise<'gaussian-splat' | '3d'> =>
     ipcRenderer.invoke('detect-ply-type', filePath),
 
