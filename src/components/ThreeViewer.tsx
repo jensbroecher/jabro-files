@@ -916,11 +916,13 @@ export const ThreeViewer: React.FC<ThreeViewerProps> = ({ filePath, fileName, is
 
       loadingManager.setURLModifier((url: string) => {
         if (!url) return url;
-        // Never modify already resolved or standard schemes (media protocol, data URLs, blobs, or web links)
+        // Never modify already resolved or standard schemes (media protocol, data URLs, blobs, or web links).
+        // Relative textures resolve against the model URL's base, which is just 'jabro-media://'
+        // (the path lives in the query), so only '?path=' media URLs are already resolved.
         if (
           url.startsWith('data:') ||
           url.startsWith('blob:') ||
-          url.startsWith('jabro-media:') ||
+          url.startsWith('jabro-media://localhost?path=') ||
           url.startsWith('http:') ||
           url.startsWith('https:')
         ) {

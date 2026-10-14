@@ -305,10 +305,12 @@ export const Background3DSnapshotGenerator: React.FC<Background3DSnapshotGenerat
 
             loadingManager.setURLModifier((url: string) => {
               if (!url) return url;
+              // Loaders resolve relative textures against the model URL's base, which is just
+              // 'jabro-media://' (the path lives in the query), so only '?path=' URLs are already resolved
               if (
                 url.startsWith('data:') ||
                 url.startsWith('blob:') ||
-                url.startsWith('jabro-media:') ||
+                url.startsWith('jabro-media://localhost?path=') ||
                 url.startsWith('http:') ||
                 url.startsWith('https:')
               ) {

@@ -1663,9 +1663,19 @@ const PREVIEWABLE_EXTENSIONS = new Set([
   '.splat', '.ksplat', '.spz',
 ]);
 
+// Rendered by the renderer's offscreen three.js snapshot generator, never by the OS thumbnailer:
+// macOS QuickLook returns a generic file-type icon (or a text preview for .gltf) instead of failing,
+// which would get cached and stop the real 3D snapshot from ever being generated.
+const RENDERER_PREVIEW_EXTENSIONS = new Set([
+  '.glb', '.gltf', '.obj', '.stl', '.ply', '.fbx',
+  '.splat', '.ksplat', '.spz',
+]);
+
 function getThumbnailCacheKey(filePath: string, mtime: string, size?: number): string {
   const normPath = path.normalize(filePath).toLowerCase();
-  return crypto.createHash('sha256').update(`${normPath}:${mtime}:${size || 0}:256`).digest('hex');
+  // ':r1' keeps renderer snapshots from colliding with OS icons cached for these formats by older builds
+  const variant = RENDERER_PREVIEW_EXTENSIONS.has(path.extname(normPath)) ? ':r1' : '';
+  return crypto.createHash('sha256').update(`${normPath}:${mtime}:${size || 0}:256${variant}`).digest('hex');
 }
 
 function getCachedThumbnailUrl(cachedPath: string): string {
@@ -1805,6 +1815,11 @@ ipcMain.handle('get-thumbnail', async (_e, { filePath, mtime, size }: { filePath
   // Fast disk check
   if (fsSync.existsSync(cachedPath)) {
     return { url: getCachedThumbnailUrl(cachedPath), hasPreview: true };
+  }
+
+  // Not cached yet: the renderer's snapshot generator will save it via 'save-thumbnail-cache'
+  if (RENDERER_PREVIEW_EXTENSIONS.has(ext)) {
+    return { hasPreview: false };
   }
 
   return thumbnailQueue.enqueue(cacheKey, async () => {

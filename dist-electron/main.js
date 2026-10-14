@@ -996,15 +996,25 @@ try {
 } catch (e) {
 	console.error("Failed to initialize thumbnail cache dir:", e);
 }
-var K = new Set(/* @__PURE__ */ ".png,.jpg,.jpeg,.webp,.bmp,.gif,.ico,.svg,.tif,.tiff,.jfif,.avif,.mp4,.mov,.mkv,.avi,.wmv,.webm,.m4v,.flv,.pdf,.glb,.gltf,.obj,.stl,.ply,.fbx,.splat,.ksplat,.spz".split(","));
-function q(e, t, n) {
-	let r = l.normalize(e).toLowerCase();
-	return m.createHash("sha256").update(`${r}:${t}:${n || 0}:256`).digest("hex");
+var K = new Set(/* @__PURE__ */ ".png,.jpg,.jpeg,.webp,.bmp,.gif,.ico,.svg,.tif,.tiff,.jfif,.avif,.mp4,.mov,.mkv,.avi,.wmv,.webm,.m4v,.flv,.pdf,.glb,.gltf,.obj,.stl,.ply,.fbx,.splat,.ksplat,.spz".split(",")), q = new Set([
+	".glb",
+	".gltf",
+	".obj",
+	".stl",
+	".ply",
+	".fbx",
+	".splat",
+	".ksplat",
+	".spz"
+]);
+function J(e, t, n) {
+	let r = l.normalize(e).toLowerCase(), i = q.has(l.extname(r)) ? ":r1" : "";
+	return m.createHash("sha256").update(`${r}:${t}:${n || 0}:256${i}`).digest("hex");
 }
-function J(e) {
+function Y(e) {
 	return `jabro-media://localhost?path=${encodeURIComponent(e)}`;
 }
-var Y = new class {
+var X = new class {
 	queue = [];
 	activeCount = 0;
 	maxConcurrency = 6;
@@ -1031,7 +1041,7 @@ var Y = new class {
 		}
 	}
 }();
-async function X(e, t, n) {
+async function Z(e, t, n) {
 	let r = [
 		".png",
 		".jpg",
@@ -1094,12 +1104,12 @@ r.handle("get-thumbnail", async (e, { filePath: t, mtime: n, size: r }) => {
 		let e = await u.stat(t);
 		a = e.mtime.toISOString(), o = e.size;
 	} catch {}
-	let s = q(t, a, o), c = l.join(G, `${s}.jpg`);
+	let s = J(t, a, o), c = l.join(G, `${s}.jpg`);
 	return d.existsSync(c) ? {
-		url: J(c),
+		url: Y(c),
 		hasPreview: !0
-	} : Y.enqueue(s, async () => d.existsSync(c) || await X(t, c, i) ? {
-		url: J(c),
+	} : q.has(i) ? { hasPreview: !1 } : X.enqueue(s, async () => d.existsSync(c) || await Z(t, c, i) ? {
+		url: Y(c),
 		hasPreview: !0
 	} : { hasPreview: !1 });
 }), r.handle("get-thumbnails-batch", async (e, t) => {
@@ -1109,8 +1119,8 @@ r.handle("get-thumbnail", async (e, { filePath: t, mtime: n, size: r }) => {
 		if (!e?.filePath) continue;
 		let t = l.extname(e.filePath).toLowerCase();
 		if (!K.has(t)) continue;
-		let r = q(e.filePath, e.mtime, e.size), i = l.join(G, `${r}.jpg`);
-		d.existsSync(i) && (n[e.filePath] = J(i));
+		let r = J(e.filePath, e.mtime, e.size), i = l.join(G, `${r}.jpg`);
+		d.existsSync(i) && (n[e.filePath] = Y(i));
 	}
 	return n;
 }), r.handle("read-file-snippet", async (e, t, n = 240) => {
@@ -1180,7 +1190,7 @@ r.handle("get-thumbnail", async (e, { filePath: t, mtime: n, size: r }) => {
 		} catch {
 			s = (/* @__PURE__ */ new Date()).toISOString(), c = 0;
 		}
-		let d = q(t, s, c), f = l.join(G, `${d}.jpg`);
+		let d = J(t, s, c), f = l.join(G, `${d}.jpg`);
 		await u.mkdir(l.dirname(f), { recursive: !0 });
 		let p = i.createFromBuffer(o);
 		if (p.isEmpty()) return !1;
