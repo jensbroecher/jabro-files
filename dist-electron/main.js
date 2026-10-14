@@ -5,11 +5,11 @@ import * as d from "node:fs";
 import { Readable as f } from "node:stream";
 import p from "node:os";
 import m from "node:crypto";
-import { exec as h, spawn as g } from "node:child_process";
-import { promisify as _ } from "node:util";
-import { fileURLToPath as v } from "node:url";
+import { exec as h, execFile as g, spawn as _ } from "node:child_process";
+import { promisify as v } from "node:util";
+import { fileURLToPath as y } from "node:url";
 //#region electron/main.ts
-var y = _(h), b = v(import.meta.url), x = l.dirname(b);
+var b = v(h), x = v(g), S = y(import.meta.url), C = l.dirname(S);
 t.commandLine.appendSwitch("enable-features", "SharedArrayBuffer"), t.commandLine.appendSwitch("allow-file-access-from-files"), t.commandLine.appendSwitch("disable-geolocation"), t.commandLine.appendSwitch("disable-background-networking"), t.commandLine.appendSwitch("disable-features", "Geolocation,WebBluetooth,WebUSB,MediaRouter"), a.registerSchemesAsPrivileged([{
 	scheme: "jabro-media",
 	privileges: {
@@ -21,17 +21,17 @@ t.commandLine.appendSwitch("enable-features", "SharedArrayBuffer"), t.commandLin
 		bypassCSP: !0
 	}
 }]);
-function S() {
-	return t.isPackaged ? l.join(process.resourcesPath, "app.asar", "dist-electron", "preload.js") : l.join(x, "preload.js");
+function w() {
+	return t.isPackaged ? l.join(process.resourcesPath, "app.asar", "dist-electron", "preload.js") : l.join(C, "preload.js");
 }
-function C() {
-	return t.isPackaged ? l.join(process.resourcesPath, "app.asar", "dist", "index.html") : l.join(x, "../dist/index.html");
+function T() {
+	return t.isPackaged ? l.join(process.resourcesPath, "app.asar", "dist", "index.html") : l.join(C, "../dist/index.html");
 }
-var w = null, T = () => l.join(t.getPath("userData"), "window-bounds.json");
-function E() {
+var E = null, D = () => l.join(t.getPath("userData"), "window-bounds.json");
+function O() {
 	try {
-		if (d.existsSync(T())) {
-			let e = d.readFileSync(T(), "utf8"), t = JSON.parse(e);
+		if (d.existsSync(D())) {
+			let e = d.readFileSync(D(), "utf8"), t = JSON.parse(e);
 			if (t && typeof t.width == "number" && typeof t.height == "number") {
 				if (t.width < 400 || t.height < 300 || t.x !== void 0 && (t.x < -1e4 || t.y < -1e4)) return null;
 				try {
@@ -46,18 +46,18 @@ function E() {
 	} catch {}
 	return null;
 }
-function D(e) {
+function k(e) {
 	try {
 		if (!e || e.isDestroyed() || e.isMinimized()) return;
 		let t = {
 			...e.isMaximized() && e.getNormalBounds ? e.getNormalBounds() : e.getBounds(),
 			isMaximized: e.isMaximized()
 		};
-		d.writeFileSync(T(), JSON.stringify(t));
+		d.writeFileSync(D(), JSON.stringify(t));
 	} catch {}
 }
-function O() {
-	let t = E(), n = {
+function A() {
+	let t = O(), n = {
 		width: 1180,
 		height: 780,
 		minWidth: 820,
@@ -70,40 +70,46 @@ function O() {
 			symbolColor: "#a1a1aa",
 			height: 40
 		},
+		...process.platform === "darwin" ? { trafficLightPosition: {
+			x: 14,
+			y: 13
+		} } : {},
 		webPreferences: {
-			preload: S(),
+			preload: w(),
 			contextIsolation: !0,
 			nodeIntegration: !1,
 			webSecurity: !1
 		}
 	};
-	t && (n.x = t.x, n.y = t.y, n.width = t.width, n.height = t.height), w = new e(n), t && t.isMaximized && w.maximize();
+	t && (n.x = t.x, n.y = t.y, n.width = t.width, n.height = t.height), E = new e(n), t && t.isMaximized && E.maximize();
 	let r = process.env.VITE_DEV_SERVER_URL;
 	if (r) {
 		let e = () => {
-			w?.loadURL(r).catch((t) => {
+			E?.loadURL(r).catch((t) => {
 				console.warn("[Main] Dev server connect failed, retrying in 350ms...", t), setTimeout(() => {
-					w && !w.isDestroyed() && e();
+					E && !E.isDestroyed() && e();
 				}, 350);
 			});
 		};
 		e();
-	} else w.loadFile(C()).catch((e) => {
+	} else E.loadFile(T()).catch((e) => {
 		console.error("[Main] Failed to load index.html:", e);
 	});
-	w.webContents.on("did-fail-load", (e, t, n, i) => {
+	E.webContents.on("did-fail-load", (e, t, n, i) => {
 		console.warn(`[Main] did-fail-load: ${n} (${t}) for ${i}`), r && i && i.includes("localhost") && setTimeout(() => {
-			w && !w.isDestroyed() && (console.log("[Main] Dev server retry on did-fail-load..."), w.loadURL(r).catch(() => {}));
+			E && !E.isDestroyed() && (console.log("[Main] Dev server retry on did-fail-load..."), E.loadURL(r).catch(() => {}));
 		}, 500);
-	}), w.webContents.on("render-process-gone", (e, t) => {
-		console.error("[Main] Render process gone:", t), t.reason !== "clean-exit" && w && !w.isDestroyed() && w.reload();
-	}), w.webContents.on("console-message", (e, t, n, r, i) => {
-		console.log(`[Renderer LOG ${t}] ${n} (${i}:${r})`);
-	}), w.on("moved", () => D(w)), w.on("resized", () => D(w)), w.on("close", () => D(w)), w.on("closed", () => {
-		w = null;
+	}), E.webContents.on("render-process-gone", (e, t) => {
+		console.error("[Main] Render process gone:", t), t.reason !== "clean-exit" && E && !E.isDestroyed() && E.reload();
+	}), E.webContents.on("console-message", ({ level: e, message: t, lineNumber: n, sourceId: r }) => {
+		console.log(`[Renderer LOG ${e}] ${t} (${r}:${n})`);
+	}), E.on("moved", () => k(E)), E.on("resized", () => k(E)), E.on("close", () => k(E)), E.on("closed", () => {
+		E = null;
 	});
 }
-t.whenReady().then(() => {
+r.on("get-home-dir", (e) => {
+	e.returnValue = p.homedir();
+}), t.whenReady().then(() => {
 	s.defaultSession.webRequest.onHeadersReceived((e, t) => {
 		let n = { ...e.responseHeaders };
 		e.resourceType === "mainFrame" && !e.url.startsWith("chrome-extension:") && (n["Cross-Origin-Opener-Policy"] = ["same-origin"], n["Cross-Origin-Embedder-Policy"] = ["credentialless"]), t({ responseHeaders: n });
@@ -172,8 +178,8 @@ t.whenReady().then(() => {
 		} catch (e) {
 			return console.error("detect-ply-type error:", e), "3d";
 		}
-	}), O(), t.on("activate", () => {
-		e.getAllWindows().length === 0 && O();
+	}), A(), t.on("activate", () => {
+		e.getAllWindows().length === 0 && A();
 	});
 }), t.on("window-all-closed", () => {
 	process.platform !== "darwin" && t.quit();
@@ -203,7 +209,7 @@ t.whenReady().then(() => {
 		return console.error("list-directory error", t, e), [];
 	}
 });
-async function k(e, t = 12) {
+async function j(e, t = 12) {
 	let n = 0, r = 0, i = 0, a = [e], o = [], s = async () => {
 		for (; a.length > 0;) {
 			let t = a.shift();
@@ -235,7 +241,7 @@ async function k(e, t = 12) {
 }
 r.handle("get-folder-size", async (e, t) => {
 	try {
-		return await k(t);
+		return await j(t);
 	} catch (e) {
 		return console.error("get-folder-size failed", t, e), {
 			size: 0,
@@ -244,7 +250,7 @@ r.handle("get-folder-size", async (e, t) => {
 		};
 	}
 });
-async function A(e, t = 50, n = 5e4) {
+async function M(e, t = 50, n = 5e4) {
 	let r = [], i = [e], a = 0;
 	for (; i.length > 0 && a < n;) {
 		let e = i.shift();
@@ -278,20 +284,24 @@ async function A(e, t = 50, n = 5e4) {
 }
 r.handle("find-largest-files", async (e, { dirPath: t, limit: n }) => {
 	try {
-		return await A(t, n || 50);
+		return await M(t, n || 50);
 	} catch (e) {
 		return console.error("find-largest-files failed", t, e), [];
 	}
 });
-function j(e) {
+function N(e) {
 	let t = (e || "").trim();
 	return t = t.replace(/^["']|["']$/g, ""), /^[A-Za-z]:$/.test(t) && (t += "\\"), t;
 }
-function M(e, t) {
-	let n = e?.code, r = l.basename(t);
-	return n === "EBUSY" ? `"${r}" is locked or currently open in another program.` : n === "EPERM" || n === "EACCES" ? `Permission denied for "${r}". You may need administrator rights, or the file/folder is write-protected.` : n === "ENOENT" ? `"${r}" could not be found or the destination folder does not exist.` : n === "ENOSPC" ? `Not enough free disk space on the target drive to copy "${r}".` : n === "EINVAL" ? `The file name or path "${r}" contains characters not supported by Windows.` : e?.message?.includes("robocopy failed") ? `Folder copy failed for "${r}" (${e.message}).` : e?.message || `Failed to process "${r}".`;
+function P(e, t) {
+	let n = l.resolve(e), r = l.resolve(t);
+	return process.platform === "linux" ? n === r : n.toLowerCase() === r.toLowerCase();
 }
-async function N(e, t, n) {
+function F(e, t) {
+	let n = e?.code, r = l.basename(t);
+	return n === "EBUSY" ? `"${r}" is locked or currently open in another program.` : n === "EPERM" || n === "EACCES" ? `Permission denied for "${r}". You may need administrator rights, or the file/folder is write-protected.` : n === "ENOENT" ? `"${r}" could not be found or the destination folder does not exist.` : n === "ENOSPC" ? `Not enough free disk space on the target drive to copy "${r}".` : n === "EINVAL" ? `The file name or path "${r}" contains characters not supported by the file system.` : e?.message?.includes("robocopy failed") ? `Folder copy failed for "${r}" (${e.message}).` : e?.message || `Failed to process "${r}".`;
+}
+async function I(e, t, n) {
 	let r = l.parse(t), i = r.name || t, a = r.ext || "", o = l.join(e, t);
 	try {
 		await u.access(o);
@@ -309,7 +319,7 @@ async function N(e, t, n) {
 	}
 	return l.join(e, `${i}_${Date.now()}${a}`);
 }
-async function P(e, t) {
+async function L(e, t) {
 	let n = l.dirname(t);
 	await u.mkdir(n, { recursive: !0 });
 	try {
@@ -338,15 +348,15 @@ async function P(e, t) {
 		await u.utimes(t, n.atime, n.mtime);
 	} catch {}
 }
-async function F(e, t) {
-	let n = e.replace(/[\\/]+$/, ""), r = t.replace(/[\\/]+$/, "");
+async function R(e, t) {
+	let n = process.platform === "win32" ? /[\\/]+$/ : /\/+$/, r = e.replace(n, "") || e, i = t.replace(n, "") || t;
 	if (process.platform === "win32") {
 		let e = !1, t = null;
 		try {
 			await new Promise((e, t) => {
-				let i = g("robocopy", [
-					n,
+				let n = _("robocopy", [
 					r,
+					i,
 					"/E",
 					"/COPY:DAT",
 					"/R:1",
@@ -357,15 +367,15 @@ async function F(e, t) {
 					"/NDL",
 					"/NP"
 				]);
-				i.stdout?.on("data", (e) => {
+				n.stdout?.on("data", (e) => {
 					let t = e.toString().trim();
-					t && w && w.webContents.send("copy-progress", { line: t.substring(0, 120) });
-				}), i.stderr?.on("data", (e) => {
+					t && E && E.webContents.send("copy-progress", { line: t.substring(0, 120) });
+				}), n.stderr?.on("data", (e) => {
 					let t = e.toString().trim();
-					t && w && w.webContents.send("copy-progress", { line: "ERR: " + t.substring(0, 110) });
-				}), i.on("close", (n) => {
+					t && E && E.webContents.send("copy-progress", { line: "ERR: " + t.substring(0, 110) });
+				}), n.on("close", (n) => {
 					n >= 8 ? t(/* @__PURE__ */ Error(`robocopy failed with exit code ${n}`)) : e();
-				}), i.on("error", (e) => {
+				}), n.on("error", (e) => {
 					t(e);
 				});
 			});
@@ -377,13 +387,14 @@ async function F(e, t) {
 	}
 	await u.cp(e, t, {
 		recursive: !0,
-		force: !0
+		force: !0,
+		preserveTimestamps: !0
 	});
 }
-async function I(e, t) {
-	(await u.stat(e)).isDirectory() ? (await F(e, t), w && w.webContents.send("copy-progress", { line: `Copied folder: ${l.basename(t)}` })) : (await P(e, t), w && w.webContents.send("copy-progress", { line: `Copied file: ${l.basename(t)}` }));
+async function z(e, t) {
+	(await u.stat(e)).isDirectory() ? (await R(e, t), E && E.webContents.send("copy-progress", { line: `Copied folder: ${l.basename(t)}` })) : (await L(e, t), E && E.webContents.send("copy-progress", { line: `Copied file: ${l.basename(t)}` }));
 }
-async function L(e) {
+async function B(e) {
 	try {
 		await u.rm(e, {
 			recursive: !0,
@@ -400,7 +411,7 @@ async function L(e) {
 		}
 	}
 }
-async function R(e) {
+async function V(e) {
 	let t = "New folder", n = t, r = l.join(e, n), i = 1;
 	for (;;) try {
 		await u.access(r), n = `${t} (${i})`, r = l.join(e, n), i++;
@@ -409,9 +420,9 @@ async function R(e) {
 	}
 	return await u.mkdir(r), r;
 }
-async function z(e) {
+async function H(e) {
 	if (process.platform !== "win32") throw Error("Administrator elevation is only supported on Windows.");
-	let t = j(e.target), n = !!e.isMove, r = e.action === "createFolder", i = [];
+	let t = N(e.target), n = !!e.isMove, r = e.action === "createFolder", i = [];
 	if (r) {
 		let n = e.newFolderName || "New folder", r = l.join(t, n), a = 1;
 		for (;;) try {
@@ -429,7 +440,7 @@ async function z(e) {
 		try {
 			o = (await u.stat(r)).isDirectory();
 		} catch {}
-		let s = l.dirname(l.resolve(r)).toLowerCase() === l.resolve(t).toLowerCase(), c = e.customDestFileName && e.sources.length === 1 ? l.join(t, e.customDestFileName) : await N(t, a, s && !n);
+		let s = P(l.dirname(l.resolve(r)), t), c = e.customDestFileName && e.sources.length === 1 ? l.join(t, e.customDestFileName) : await I(t, a, s && !n);
 		i.push({
 			src: r,
 			dest: c,
@@ -465,7 +476,7 @@ try {
 }
 `;
 	return new Promise((e, t) => {
-		let a = g("powershell.exe", [
+		let a = _("powershell.exe", [
 			"-NoProfile",
 			"-Command",
 			m
@@ -516,8 +527,22 @@ try {
 		});
 	});
 }
-r.handle("perform-elevated-op", async (e, t) => z(t)), r.handle("copy-files", async (e, { sources: t, target: n }) => {
-	let r = j(n);
+function U(e, t) {
+	r.handle(e, async (e, ...n) => {
+		let r = await t(e, ...n);
+		if (process.platform !== "win32" && r && r.requiresElevation) {
+			let { requiresElevation: e, ...t } = r, n = t.summary || t.error || "Permission denied.";
+			return {
+				...t,
+				success: !1,
+				error: t.error || n
+			};
+		}
+		return r;
+	});
+}
+r.handle("perform-elevated-op", async (e, t) => H(t)), U("copy-files", async (e, { sources: t, target: n }) => {
+	let r = N(n);
 	try {
 		(await u.stat(r)).isDirectory() || (r = l.dirname(r));
 	} catch {}
@@ -537,7 +562,7 @@ r.handle("perform-elevated-op", async (e, t) => z(t)), r.handle("copy-files", as
 	let i = [], a = [];
 	for (let e = 0; e < t.length; e++) {
 		let n = t[e], o = l.basename(n);
-		w && w.webContents.send("copy-progress", {
+		E && E.webContents.send("copy-progress", {
 			line: `Copying ${o} (${e + 1}/${t.length})...`,
 			current: e + 1,
 			total: t.length,
@@ -550,15 +575,15 @@ r.handle("perform-elevated-op", async (e, t) => z(t)), r.handle("copy-files", as
 			} catch {
 				throw Error(`Source "${o}" does not exist or cannot be accessed.`);
 			}
-			let e = l.dirname(l.resolve(n)).toLowerCase() === l.resolve(r).toLowerCase(), t = await N(r, o, e);
-			await I(n, t), i.push({
+			let e = P(l.dirname(l.resolve(n)), r), t = await I(r, o, e);
+			await z(n, t), i.push({
 				src: n,
 				dest: t,
 				name: l.basename(t),
 				success: !0
 			});
 		} catch (e) {
-			let t = M(e, n);
+			let t = F(e, n);
 			a.push(t), i.push({
 				src: n,
 				name: o,
@@ -568,13 +593,13 @@ r.handle("perform-elevated-op", async (e, t) => z(t)), r.handle("copy-files", as
 		}
 	}
 	let o = i.filter((e) => e.success).length, s = i.filter((e) => !e.success).length, c = "";
-	if (s === 0) c = o === 1 ? `Successfully copied "${i[0]?.name}"` : `Successfully copied ${o} items`, w && w.webContents.send("copy-progress", {
+	if (s === 0) c = o === 1 ? `Successfully copied "${i[0]?.name}"` : `Successfully copied ${o} items`, E && E.webContents.send("copy-progress", {
 		line: c,
 		phase: "complete",
 		success: !0
 	});
 	else if (o === 0) {
-		if (c = `Failed to copy ${t.length === 1 ? `"${l.basename(t[0])}"` : `${t.length} items`}: ${a[0]}`, w && w.webContents.send("copy-progress", {
+		if (c = `Failed to copy ${t.length === 1 ? `"${l.basename(t[0])}"` : `${t.length} items`}: ${a[0]}`, E && E.webContents.send("copy-progress", {
 			line: c,
 			phase: "failed",
 			success: !1,
@@ -589,7 +614,7 @@ r.handle("perform-elevated-op", async (e, t) => z(t)), r.handle("copy-files", as
 			errors: a
 		};
 		throw Error(c);
-	} else c = `Copied ${o} of ${t.length} items (${s} failed).`, w && w.webContents.send("copy-progress", {
+	} else c = `Copied ${o} of ${t.length} items (${s} failed).`, E && E.webContents.send("copy-progress", {
 		line: c,
 		phase: "partial",
 		success: !1,
@@ -603,8 +628,8 @@ r.handle("perform-elevated-op", async (e, t) => z(t)), r.handle("copy-files", as
 		summary: c,
 		errors: a
 	};
-}), r.handle("move-files", async (e, { sources: t, target: n }) => {
-	let r = j(n);
+}), U("move-files", async (e, { sources: t, target: n }) => {
+	let r = N(n);
 	try {
 		(await u.stat(r)).isDirectory() || (r = l.dirname(r));
 	} catch {}
@@ -624,7 +649,7 @@ r.handle("perform-elevated-op", async (e, t) => z(t)), r.handle("copy-files", as
 	let i = [], a = [];
 	for (let e = 0; e < t.length; e++) {
 		let n = t[e], o = l.basename(n);
-		w && w.webContents.send("copy-progress", {
+		E && E.webContents.send("copy-progress", {
 			line: `Moving ${o} (${e + 1}/${t.length})...`,
 			current: e + 1,
 			total: t.length,
@@ -637,7 +662,7 @@ r.handle("perform-elevated-op", async (e, t) => z(t)), r.handle("copy-files", as
 			} catch {
 				throw Error(`Source "${o}" does not exist or cannot be accessed.`);
 			}
-			if (l.dirname(l.resolve(n)).toLowerCase() === l.resolve(r).toLowerCase()) {
+			if (P(l.dirname(l.resolve(n)), r)) {
 				i.push({
 					src: n,
 					dest: n,
@@ -646,11 +671,11 @@ r.handle("perform-elevated-op", async (e, t) => z(t)), r.handle("copy-files", as
 				});
 				continue;
 			}
-			let e = await N(r, o, !1), t = !1;
+			let e = await I(r, o, !1), t = !1;
 			try {
 				await u.rename(n, e), t = !0;
 			} catch (r) {
-				if (r.code === "EXDEV" || r.code === "EPERM" || r.code === "EBUSY") await I(n, e), await L(n), t = !0;
+				if (r.code === "EXDEV" || r.code === "EPERM" || r.code === "EBUSY") await z(n, e), await B(n), t = !0;
 				else throw r;
 			}
 			t && i.push({
@@ -660,7 +685,7 @@ r.handle("perform-elevated-op", async (e, t) => z(t)), r.handle("copy-files", as
 				success: !0
 			});
 		} catch (e) {
-			let t = M(e, n);
+			let t = F(e, n);
 			a.push(t), i.push({
 				src: n,
 				name: o,
@@ -670,13 +695,13 @@ r.handle("perform-elevated-op", async (e, t) => z(t)), r.handle("copy-files", as
 		}
 	}
 	let o = i.filter((e) => e.success).length, s = i.filter((e) => !e.success).length, c = "";
-	if (s === 0) c = o === 1 ? `Successfully moved "${i[0]?.name}"` : `Successfully moved ${o} items`, w && w.webContents.send("copy-progress", {
+	if (s === 0) c = o === 1 ? `Successfully moved "${i[0]?.name}"` : `Successfully moved ${o} items`, E && E.webContents.send("copy-progress", {
 		line: c,
 		phase: "complete",
 		success: !0
 	});
 	else if (o === 0) {
-		if (c = `Failed to move ${t.length === 1 ? `"${l.basename(t[0])}"` : `${t.length} items`}: ${a[0]}`, w && w.webContents.send("copy-progress", {
+		if (c = `Failed to move ${t.length === 1 ? `"${l.basename(t[0])}"` : `${t.length} items`}: ${a[0]}`, E && E.webContents.send("copy-progress", {
 			line: c,
 			phase: "failed",
 			success: !1,
@@ -691,7 +716,7 @@ r.handle("perform-elevated-op", async (e, t) => z(t)), r.handle("copy-files", as
 			errors: a
 		};
 		throw Error(c);
-	} else c = `Moved ${o} of ${t.length} items (${s} failed).`, w && w.webContents.send("copy-progress", {
+	} else c = `Moved ${o} of ${t.length} items (${s} failed).`, E && E.webContents.send("copy-progress", {
 		line: c,
 		phase: "partial",
 		success: !1,
@@ -705,9 +730,9 @@ r.handle("perform-elevated-op", async (e, t) => z(t)), r.handle("copy-files", as
 		summary: c,
 		errors: a
 	};
-}), r.handle("create-folder", async (e, t) => {
+}), U("create-folder", async (e, t) => {
 	try {
-		return await R(t);
+		return await V(t);
 	} catch (e) {
 		if (console.error("create-folder failed for", t, e), e.code === "EPERM" || e.code === "EACCES") return {
 			success: !1,
@@ -718,15 +743,15 @@ r.handle("perform-elevated-op", async (e, t) => z(t)), r.handle("copy-files", as
 		throw e;
 	}
 }), r.handle("select-folder", async () => {
-	if (!w) return null;
-	let e = await n.showOpenDialog(w, {
+	if (!E) return null;
+	let e = await n.showOpenDialog(E, {
 		properties: ["openDirectory", "createDirectory"],
 		title: "Open folder"
 	});
 	return e.canceled || e.filePaths.length === 0 ? null : e.filePaths[0];
 }), r.handle("select-files", async () => {
-	if (!w) return [];
-	let e = await n.showOpenDialog(w, {
+	if (!E) return [];
+	let e = await n.showOpenDialog(E, {
 		properties: ["openFile", "multiSelections"],
 		title: "Select files to add to collection"
 	});
@@ -757,8 +782,8 @@ r.handle("perform-elevated-op", async (e, t) => z(t)), r.handle("copy-files", as
 		});
 	}
 	return n;
-}), r.handle("save-file-as", async (e, t) => {
-	if (!w) return { canceled: !0 };
+}), U("save-file-as", async (e, t) => {
+	if (!E) return { canceled: !0 };
 	try {
 		if ((await u.stat(t)).isDirectory()) return {
 			success: !1,
@@ -778,7 +803,7 @@ r.handle("perform-elevated-op", async (e, t) => z(t)), r.handle("copy-files", as
 		name: "All Files (*.*)",
 		extensions: ["*"]
 	});
-	let a = await n.showSaveDialog(w, {
+	let a = await n.showSaveDialog(E, {
 		title: "Save As",
 		defaultPath: t,
 		filters: i,
@@ -786,12 +811,12 @@ r.handle("perform-elevated-op", async (e, t) => z(t)), r.handle("copy-files", as
 	});
 	if (a.canceled || !a.filePath) return { canceled: !0 };
 	let o = a.filePath;
-	if (l.resolve(t).toLowerCase() === l.resolve(o).toLowerCase()) return {
+	if (P(t, o)) return {
 		success: !1,
 		error: "Destination is identical to the source file."
 	};
 	try {
-		return await u.mkdir(l.dirname(o), { recursive: !0 }), await P(t, o), {
+		return await u.mkdir(l.dirname(o), { recursive: !0 }), await L(t, o), {
 			success: !0,
 			sourcePath: t,
 			destPath: o,
@@ -831,18 +856,87 @@ r.handle("perform-elevated-op", async (e, t) => z(t)), r.handle("copy-files", as
 	}
 }), r.handle("open-terminal", async (e, t, n = "cmd") => {
 	try {
-		let e = t.replace(/"/g, "\\\""), r;
-		r = n === "powershell" ? `start powershell -NoExit -Command "Set-Location -LiteralPath '${e}'"` : `start cmd /K "cd /D \\"${e}\\""`, await y(r, { cwd: t });
+		if (process.platform === "win32") {
+			let e = t.replace(/"/g, "\\\"");
+			await b(n === "powershell" ? `start powershell -NoExit -Command "Set-Location -LiteralPath '${e}'"` : `start cmd /K "cd /D \\"${e}\\""`, { cwd: t });
+		} else if (process.platform === "darwin") await x("open", [
+			"-a",
+			"Terminal",
+			t
+		]);
+		else {
+			let e = [
+				["x-terminal-emulator", []],
+				["gnome-terminal", ["--working-directory", t]],
+				["konsole", ["--workdir", t]],
+				["xfce4-terminal", ["--working-directory", t]],
+				["xterm", []]
+			];
+			for (let [n, r] of e) if (await new Promise((e) => {
+				let i = _(n, r, {
+					cwd: t,
+					detached: !0,
+					stdio: "ignore"
+				});
+				i.once("error", () => e(!1)), i.once("spawn", () => {
+					i.unref(), e(!0);
+				});
+			})) break;
+		}
 	} catch (e) {
 		console.error("Failed to open terminal", e);
 	}
-}), r.handle("get-drives", async () => {
-	if (process.platform !== "win32") return [{
+});
+async function W() {
+	let e = process.platform === "darwin" ? ["/Volumes"] : (() => {
+		let e = p.userInfo().username;
+		return [
+			`/media/${e}`,
+			`/run/media/${e}`,
+			"/media",
+			"/mnt"
+		];
+	})(), t = process.platform === "darwin" ? "Macintosh HD" : void 0, n = [], r = new Set(["/"]);
+	for (let i of e) {
+		let e = [];
+		try {
+			e = await u.readdir(i);
+		} catch {
+			continue;
+		}
+		for (let a of e) {
+			if (a.startsWith(".")) continue;
+			let e = l.join(i, a);
+			try {
+				let i = await u.realpath(e);
+				if (i === "/") {
+					process.platform === "darwin" && (t = a);
+					continue;
+				}
+				if (!(await u.stat(e)).isDirectory() || r.has(i)) continue;
+				r.add(i), n.push({
+					name: a,
+					path: e
+				});
+			} catch {}
+		}
+	}
+	let i = [{
 		name: "/",
-		path: "/"
-	}];
+		path: "/",
+		label: t
+	}, ...n];
+	return await Promise.all(i.map(async (e) => {
+		try {
+			let t = await u.statfs(e.path);
+			e.size = Number(t.blocks) * Number(t.bsize), e.freeSpace = Number(t.bavail) * Number(t.bsize);
+		} catch {}
+	})), i;
+}
+r.handle("get-drives", async () => {
+	if (process.platform !== "win32") return W();
 	try {
-		let { stdout: e } = await y("powershell -NoProfile -Command \"@(Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID, VolumeName, Description, Size, FreeSpace) | ConvertTo-Json\""), t = JSON.parse(e || "[]"), n = (Array.isArray(t) ? t : [t]).filter((e) => e?.DeviceID && /^[A-Za-z]:/i.test(e.DeviceID)).map((e) => {
+		let { stdout: e } = await b("powershell -NoProfile -Command \"@(Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID, VolumeName, Description, Size, FreeSpace) | ConvertTo-Json\""), t = JSON.parse(e || "[]"), n = (Array.isArray(t) ? t : [t]).filter((e) => e?.DeviceID && /^[A-Za-z]:/i.test(e.DeviceID)).map((e) => {
 			let t = e.VolumeName && typeof e.VolumeName == "string" && e.VolumeName.trim() ? e.VolumeName.trim() : void 0;
 			return t || (e.Description === "Removable Disk" ? t = "Removable Disk" : e.Description === "Local Fixed Disk" ? t = "Local Disk" : e.Description && typeof e.Description == "string" && e.Description.trim() && (t = e.Description.trim())), {
 				name: e.DeviceID.replace(/\\$/, ""),
@@ -896,21 +990,21 @@ r.handle("perform-elevated-op", async (e, t) => z(t)), r.handle("copy-files", as
 		return console.error("get-default-quick-access failed", e), [];
 	}
 });
-var B = l.join(t.getPath("userData"), "thumbnails_cache");
+var G = l.join(t.getPath("userData"), "thumbnails_cache");
 try {
-	d.mkdirSync(B, { recursive: !0 });
+	d.mkdirSync(G, { recursive: !0 });
 } catch (e) {
 	console.error("Failed to initialize thumbnail cache dir:", e);
 }
-var V = new Set(/* @__PURE__ */ ".png,.jpg,.jpeg,.webp,.bmp,.gif,.ico,.svg,.tif,.tiff,.jfif,.avif,.mp4,.mov,.mkv,.avi,.wmv,.webm,.m4v,.flv,.pdf,.glb,.gltf,.obj,.stl,.ply,.fbx,.splat,.ksplat,.spz".split(","));
-function H(e, t, n) {
+var K = new Set(/* @__PURE__ */ ".png,.jpg,.jpeg,.webp,.bmp,.gif,.ico,.svg,.tif,.tiff,.jfif,.avif,.mp4,.mov,.mkv,.avi,.wmv,.webm,.m4v,.flv,.pdf,.glb,.gltf,.obj,.stl,.ply,.fbx,.splat,.ksplat,.spz".split(","));
+function q(e, t, n) {
 	let r = l.normalize(e).toLowerCase();
 	return m.createHash("sha256").update(`${r}:${t}:${n || 0}:256`).digest("hex");
 }
-function U(e) {
+function J(e) {
 	return `jabro-media://localhost?path=${encodeURIComponent(e)}`;
 }
-var W = new class {
+var Y = new class {
 	queue = [];
 	activeCount = 0;
 	maxConcurrency = 6;
@@ -937,7 +1031,7 @@ var W = new class {
 		}
 	}
 }();
-async function G(e, t, n) {
+async function X(e, t, n) {
 	let r = [
 		".png",
 		".jpg",
@@ -994,18 +1088,18 @@ async function G(e, t, n) {
 r.handle("get-thumbnail", async (e, { filePath: t, mtime: n, size: r }) => {
 	if (!t) return { hasPreview: !1 };
 	let i = l.extname(t).toLowerCase();
-	if (!V.has(i)) return { hasPreview: !1 };
+	if (!K.has(i)) return { hasPreview: !1 };
 	let a = n, o = r;
 	if (!a || o === void 0 || o === 0) try {
 		let e = await u.stat(t);
 		a = e.mtime.toISOString(), o = e.size;
 	} catch {}
-	let s = H(t, a, o), c = l.join(B, `${s}.jpg`);
+	let s = q(t, a, o), c = l.join(G, `${s}.jpg`);
 	return d.existsSync(c) ? {
-		url: U(c),
+		url: J(c),
 		hasPreview: !0
-	} : W.enqueue(s, async () => d.existsSync(c) || await G(t, c, i) ? {
-		url: U(c),
+	} : Y.enqueue(s, async () => d.existsSync(c) || await X(t, c, i) ? {
+		url: J(c),
 		hasPreview: !0
 	} : { hasPreview: !1 });
 }), r.handle("get-thumbnails-batch", async (e, t) => {
@@ -1014,9 +1108,9 @@ r.handle("get-thumbnail", async (e, { filePath: t, mtime: n, size: r }) => {
 	for (let e of t) {
 		if (!e?.filePath) continue;
 		let t = l.extname(e.filePath).toLowerCase();
-		if (!V.has(t)) continue;
-		let r = H(e.filePath, e.mtime, e.size), i = l.join(B, `${r}.jpg`);
-		d.existsSync(i) && (n[e.filePath] = U(i));
+		if (!K.has(t)) continue;
+		let r = q(e.filePath, e.mtime, e.size), i = l.join(G, `${r}.jpg`);
+		d.existsSync(i) && (n[e.filePath] = J(i));
 	}
 	return n;
 }), r.handle("read-file-snippet", async (e, t, n = 240) => {
@@ -1028,31 +1122,31 @@ r.handle("get-thumbnail", async (e, { filePath: t, mtime: n, size: r }) => {
 	}
 }), r.handle("get-thumbnail-cache-stats", async () => {
 	try {
-		let e = await u.readdir(B), t = 0, n = 0;
+		let e = await u.readdir(G), t = 0, n = 0;
 		for (let r of e) if (r.endsWith(".jpg") || r.endsWith(".webp")) {
 			n++;
 			try {
-				let e = await u.stat(l.join(B, r));
+				let e = await u.stat(l.join(G, r));
 				t += e.size;
 			} catch {}
 		}
 		return {
 			count: n,
 			sizeBytes: t,
-			cachePath: B
+			cachePath: G
 		};
 	} catch {
 		return {
 			count: 0,
 			sizeBytes: 0,
-			cachePath: B
+			cachePath: G
 		};
 	}
 }), r.handle("clear-thumbnail-cache", async () => {
 	try {
-		let e = await u.readdir(B), t = 0, n = 0;
+		let e = await u.readdir(G), t = 0, n = 0;
 		for (let r of e) if (r.endsWith(".jpg") || r.endsWith(".webp")) {
-			let e = l.join(B, r);
+			let e = l.join(G, r);
 			try {
 				let r = await u.stat(e);
 				t += r.size, await u.unlink(e), n++;
@@ -1072,7 +1166,7 @@ r.handle("get-thumbnail", async (e, { filePath: t, mtime: n, size: r }) => {
 	}
 }), r.handle("open-thumbnail-cache-folder", async () => {
 	try {
-		await c.openPath(B);
+		await c.openPath(G);
 	} catch (e) {
 		console.error("Failed to open thumbnail cache folder:", e);
 	}
@@ -1086,7 +1180,7 @@ r.handle("get-thumbnail", async (e, { filePath: t, mtime: n, size: r }) => {
 		} catch {
 			s = (/* @__PURE__ */ new Date()).toISOString(), c = 0;
 		}
-		let d = H(t, s, c), f = l.join(B, `${d}.jpg`);
+		let d = q(t, s, c), f = l.join(G, `${d}.jpg`);
 		await u.mkdir(l.dirname(f), { recursive: !0 });
 		let p = i.createFromBuffer(o);
 		if (p.isEmpty()) return !1;

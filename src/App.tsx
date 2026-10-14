@@ -14,6 +14,11 @@ import { PdfViewer } from './components/PdfViewer';
 import { GridView } from './components/GridView';
 import { Background3DSnapshotGenerator } from './components/Background3DSnapshotGenerator';
 import { BackgroundPdfSnapshotGenerator } from './components/BackgroundPdfSnapshotGenerator';
+import {
+  HOME_DIR, IS_WIN, IS_MAC, MOD_KEY, COPY_MOD_LABEL, FILE_MANAGER_NAME, isCopyModifier,
+  baseName, dirName, normalizeDirPath, parentPath, isAbsolutePath, pathsEqual,
+  isSameOrInside, volumeKey, pathBreadcrumbs,
+} from './utils/paths';
 
 export interface Collection {
   id: string;
@@ -176,10 +181,7 @@ function getTabTitle(p: string, collections?: Collection[]): string {
     const col = collections?.find(c => c.id === colId);
     return col ? col.name : 'Collection';
   }
-  const trimmed = p.replace(/[\\/]+$/, '');
-  const parts = trimmed.split(/[\\/]/).filter(Boolean);
-  if (parts.length === 0) return p;
-  return parts[parts.length - 1] || p;
+  return baseName(p);
 }
 
 function parseBreadcrumbs(pathStr: string, collections?: Collection[]): Array<{ name: string; fullPath: string; isCollectionRoot?: boolean; isCollection?: boolean }> {
@@ -191,22 +193,7 @@ function parseBreadcrumbs(pathStr: string, collections?: Collection[]): Array<{ 
       { name: col?.name || 'Virtual Collection', fullPath: pathStr, isCollection: true },
     ];
   }
-  const normalized = pathStr.replace(/\//g, '\\');
-  const parts = normalized.split('\\').filter(Boolean);
-  const breadcrumbs: Array<{ name: string; fullPath: string; isCollectionRoot?: boolean; isCollection?: boolean }> = [];
-
-  let accumulated = '';
-  for (let i = 0; i < parts.length; i++) {
-    const part = parts[i];
-    if (i === 0 && /^[a-zA-Z]:$/.test(part)) {
-      accumulated = part + '\\';
-      breadcrumbs.push({ name: part, fullPath: accumulated });
-    } else {
-      accumulated = accumulated ? (accumulated.endsWith('\\') ? accumulated + part : accumulated + '\\' + part) : part;
-      breadcrumbs.push({ name: part, fullPath: accumulated });
-    }
-  }
-  return breadcrumbs.length > 0 ? breadcrumbs : [{ name: pathStr, fullPath: pathStr }];
+  return pathBreadcrumbs(pathStr);
 }
 
 const TreemapView: React.FC<{
@@ -357,7 +344,7 @@ const TreemapView: React.FC<{
 export default function App() {
   // Always running inside Electron now (no more demo mode)
 
-  const [currentPath, setCurrentPath] = useState('H:\\AppDev\\size-browser');
+  const [currentPath, setCurrentPath] = useState(HOME_DIR);
   const [entries, setEntries] = useState<DirEntry[]>([]);
   const [sizeCache, setSizeCache] = useState<Record<string, SizeResult>>({});
   const [selected, setSelected] = useState<string | null>(null);
@@ -365,7 +352,7 @@ export default function App() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [filter, setFilter] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [history, setHistory] = useState<string[]>(['H:\\AppDev\\size-browser']);
+  const [history, setHistory] = useState<string[]>([HOME_DIR]);
   const [historyIndex, setHistoryIndex] = useState(0);
   const [autoCalc, setAutoCalc] = useState(true);
   const [drives, setDrives] = useState<DriveInfo[]>([]);
@@ -382,13 +369,13 @@ export default function App() {
 
   // Multi-Tab browsing state
   const [tabs, setTabs] = useState<TabInfo[]>([
-    { id: 'tab-1', path: 'H:\\AppDev\\size-browser', history: ['H:\\AppDev\\size-browser'], historyIndex: 0 }
+    { id: 'tab-1', path: HOME_DIR, history: [HOME_DIR], historyIndex: 0 }
   ]);
   const [activeTabId, setActiveTabId] = useState('tab-1');
 
   // Interactive Breadcrumbs & inline path editing
   const [isEditingPath, setIsEditingPath] = useState(false);
-  const [pathInputValue, setPathInputValue] = useState('H:\\AppDev\\size-browser');
+  const [pathInputValue, setPathInputValue] = useState(HOME_DIR);
 
   // View Mode: Table vs Grid Preview Tiles vs Interactive Treemap
   const [viewMode, setViewMode] = useState<'table' | 'grid' | 'treemap'>(() => {
@@ -685,21 +672,20 @@ export default function App() {
   const dirCacheRef = useRef(new Map<string, DirEntry[]>());
 
   // Right pane for dual mode (basic independent navigation)
-  const [rightCurrentPath, setRightCurrentPath] = useState('H:\\');
+  const [rightCurrentPath, setRightCurrentPath] = useState(HOME_DIR);
   const [rightEntries, setRightEntries] = useState<DirEntry[]>([]);
   const [rightSelected, setRightSelected] = useState<string | null>(null);
   const [rightFilter, setRightFilter] = useState('');
   const [rightSortBy, setRightSortBy] = useState<'name' | 'size' | 'mtime'>('name');
   const [rightSortDir, setRightSortDir] = useState<'asc' | 'desc'>('asc');
-  const [rightHistory, setRightHistory] = useState<string[]>(['H:\\']);
+  const [rightHistory, setRightHistory] = useState<string[]>([HOME_DIR]);
   const [rightHistoryIndex, setRightHistoryIndex] = useState(0);
   const [activePane, setActivePane] = useState<'left' | 'right'>('left');
 
   // Load directory contents
   const loadDirectory = useCallback(async (path: string) => {
     const isCollection = path.startsWith('collection:');
-    const trimmed = path.replace(/\\+$/, '');
-    const normalized = isCollection ? path : (trimmed.endsWith(':') ? trimmed + '\\' : trimmed);
+    const normalized = isCollection ? path : normalizeDirPath(path);
     if (leftLoadingRef.current === normalized) return;
     leftLoadingRef.current = normalized;
 
@@ -776,8 +762,7 @@ export default function App() {
   // Load for right pane (duplicated for dual pane support)
   const loadRightDirectory = useCallback(async (path: string) => {
     const isCollection = path.startsWith('collection:');
-    const trimmed = path.replace(/\\+$/, '');
-    const normalized = isCollection ? path : (trimmed.endsWith(':') ? trimmed + '\\' : trimmed);
+    const normalized = isCollection ? path : normalizeDirPath(path);
     if (rightLoadingRef.current === normalized) return;
     rightLoadingRef.current = normalized;
 
@@ -848,16 +833,10 @@ export default function App() {
 
     if (api?.getDrives) {
       api.getDrives().then((d: DriveInfo[]) => setDrives(d)).catch(() => {
-        setDrives([
-          { name: 'C:', path: 'C:\\', size: 1000000000000, freeSpace: 300000000000 },
-          { name: 'D:', path: 'D:\\', size: 500000000000, freeSpace: 150000000000 },
-        ]);
+        setDrives([]);
       });
     } else {
-      setDrives([
-        { name: 'C:', path: 'C:\\', size: 1000000000000, freeSpace: 300000000000 },
-        { name: 'D:', path: 'D:\\', size: 500000000000, freeSpace: 150000000000 },
-      ]);
+      setDrives([]);
     }
   }, []);
 
@@ -913,8 +892,7 @@ export default function App() {
 
   // History navigation
   const navigateTo = useCallback((newPath: string) => {
-    const trimmed = newPath.replace(/\\+$/, '');
-    const normalized = trimmed.endsWith(':') ? trimmed + '\\' : trimmed;
+    const normalized = normalizeDirPath(newPath);
     if (!normalized) return;
 
     const newHist = history.slice(0, historyIndex + 1);
@@ -941,16 +919,13 @@ export default function App() {
   };
 
   const goUp = () => {
-    const parts = currentPath.split('\\').filter(Boolean);
-    if (parts.length <= 1) return;
-    const parent = parts.slice(0, -1).join('\\') + '\\';
-    navigateTo(parent);
+    const parent = parentPath(currentPath);
+    if (parent) navigateTo(parent);
   };
 
   // Right pane navigation (for dual mode)
   const navigateRight = useCallback((newPath: string) => {
-    const trimmed = newPath.replace(/\\+$/, '');
-    const normalized = trimmed.endsWith(':') ? trimmed + '\\' : trimmed;
+    const normalized = normalizeDirPath(newPath);
     if (!normalized) return;
     const newHist = rightHistory.slice(0, rightHistoryIndex + 1);
     newHist.push(normalized);
@@ -976,10 +951,8 @@ export default function App() {
   };
 
   const goRightUp = () => {
-    const parts = rightCurrentPath.split('\\').filter(Boolean);
-    if (parts.length <= 1) return;
-    const parent = parts.slice(0, -1).join('\\') + '\\';
-    navigateRight(parent);
+    const parent = parentPath(rightCurrentPath);
+    if (parent) navigateRight(parent);
   };
 
   // Collection operations (Virtual Folders)
@@ -1082,10 +1055,10 @@ export default function App() {
     const colPath = 'collection:' + colId;
     dirCacheRef.current.delete(colPath);
     if (currentPath === colPath) {
-      navigateTo(drives[0]?.path || 'C:\\');
+      navigateTo(HOME_DIR);
     }
     if (dualPane && rightCurrentPath === colPath) {
-      navigateRight(drives[0]?.path || 'C:\\');
+      navigateRight(HOME_DIR);
     }
   }, [showToast, currentPath, rightCurrentPath, dualPane, drives, navigateTo, navigateRight]);
 
@@ -1164,7 +1137,7 @@ export default function App() {
           if (Array.isArray(parsed)) paths = parsed.filter((p: any) => typeof p === 'string');
           else if (typeof parsed === 'string') paths = [parsed];
         } catch {
-          if (/^[a-zA-Z]:[\\/]/.test(json.trim()) || /^\\\\[\w]/.test(json.trim())) {
+          if (isAbsolutePath(json)) {
             paths = [json.trim()];
           }
         }
@@ -1250,7 +1223,7 @@ export default function App() {
       });
       return;
     }
-    const fileName = p.split(/[\\/]/).pop() || p;
+    const fileName = baseName(p);
     setClipboard({ paths: [p], isCut });
 
     try {
@@ -1274,7 +1247,7 @@ export default function App() {
         const text = await navigator.clipboard.readText();
         if (text) {
           const lines = text.split(/\r?\n/).map(l => l.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
-          const valid = lines.filter(l => /^[a-zA-Z]:[\\/]/.test(l) || /^\\\\[\w]/.test(l));
+          const valid = lines.filter(l => isAbsolutePath(l));
           if (valid.length > 0) {
             pathsToPaste = valid;
             isCut = false;
@@ -1287,7 +1260,7 @@ export default function App() {
       showToast({
         type: 'info',
         title: 'Clipboard is empty',
-        message: 'Copy (Ctrl+C) or cut (Ctrl+X) an item first.'
+        message: `Copy (${MOD_KEY}+C) or cut (${MOD_KEY}+X) an item first.`
       });
       return;
     }
@@ -1297,7 +1270,7 @@ export default function App() {
     if (!targetPath) return;
 
     const count = pathsToPaste.length;
-    const firstItemName = pathsToPaste[0].split(/[\\/]/).pop() || 'item';
+    const firstItemName = baseName(pathsToPaste[0]) || 'item';
     const progressToastId = showToast({
       type: 'loading',
       title: isCut ? 'Moving...' : 'Copying...',
@@ -1336,8 +1309,8 @@ export default function App() {
 
       // If cut across different folders, also reload source directory
       if (isCut && pathsToPaste.length > 0) {
-        const srcDir = pathsToPaste[0].substring(0, Math.max(pathsToPaste[0].lastIndexOf('\\'), pathsToPaste[0].lastIndexOf('/')));
-        if (srcDir && srcDir.toLowerCase() !== targetPath.toLowerCase()) {
+        const srcDir = dirName(pathsToPaste[0]);
+        if (srcDir && !pathsEqual(srcDir, targetPath)) {
           if (targetIsRight) await loadDirectory(srcDir);
           else await loadRightDirectory(srcDir);
         }
@@ -1560,7 +1533,7 @@ export default function App() {
           setTimeout(() => setHighlightedPath(null), 2500);
         }
 
-        const targetFolderDisplay = elevationPrompt.target.split(/[\\/]/).filter(Boolean).pop() || elevationPrompt.target;
+        const targetFolderDisplay = baseName(elevationPrompt.target);
         const isFolder = elevationPrompt.action === 'createFolder';
         showToast({
           type: 'success',
@@ -1604,7 +1577,7 @@ export default function App() {
 
   // Drag & drop support: internal (from our rows via dataTransfer) + external (files from Explorer/desktop)
   // Drop targets the given path (dir row, pane bg, QA, drive).
-  // Modifiers: Ctrl held = force copy, Shift held = force move.
+  // Modifiers: Ctrl (Option on macOS) held = force copy, Shift held = force move.
   // Default: same volume = move, different volume = copy.
   const handleDropToPath = useCallback(async (e: React.DragEvent, targetDir: string) => {
     e.preventDefault();
@@ -1620,7 +1593,7 @@ export default function App() {
           if (Array.isArray(parsed)) paths = parsed.filter((p: any) => typeof p === 'string');
           else if (typeof parsed === 'string') paths = [parsed];
         } catch {
-          if (/^[a-zA-Z]:[\\/]/.test(json.trim()) || /^\\\\[\w]/.test(json.trim())) {
+          if (isAbsolutePath(json)) {
             paths = [json.trim()];
           }
         }
@@ -1646,25 +1619,25 @@ export default function App() {
       addPathsToCollection(colId, paths);
       return;
     }
-    const forceCopy = e.ctrlKey;
+    const forceCopy = isCopyModifier(e);
     const forceMove = e.shiftKey;
-    const isSameDrive = paths.length > 0 && paths[0][0]?.toLowerCase() === targetDir[0]?.toLowerCase();
+    const isSameDrive = paths.length > 0 && volumeKey(paths[0]) === volumeKey(targetDir);
     const useMove = forceMove || (!forceCopy && isSameDrive);
 
-    // Dropping in the same folder without holding Ctrl
-    const srcDir = paths[0].substring(0, Math.max(paths[0].lastIndexOf('\\'), paths[0].lastIndexOf('/')));
-    const isSameFolder = paths.length === 1 && srcDir.toLowerCase() === targetDir.toLowerCase();
+    // Dropping in the same folder without holding the copy modifier
+    const srcDir = dirName(paths[0]);
+    const isSameFolder = paths.length === 1 && pathsEqual(srcDir, targetDir);
     if (isSameFolder && !forceCopy) {
       showToast({
         type: 'info',
         title: 'Already in this folder',
-        message: 'Hold Ctrl while dragging to duplicate this file.'
+        message: `Hold ${COPY_MOD_LABEL} while dragging to duplicate this file.`
       });
       return;
     }
 
     const count = paths.length;
-    const firstItemName = paths[0].split(/[\\/]/).pop() || 'item';
+    const firstItemName = baseName(paths[0]) || 'item';
     const progressToastId = showToast({
       type: 'loading',
       title: useMove ? 'Moving...' : 'Copying...',
@@ -1692,7 +1665,7 @@ export default function App() {
 
       // Refresh panes that are viewing the target or ancestor/descendant
       const actPath = activePaneIsRight ? rightCurrentPath : currentPath;
-      const isAffected = (p: string) => p === targetDir || p.startsWith(targetDir + '\\') || targetDir.startsWith(p + '\\');
+      const isAffected = (p: string) => isSameOrInside(p, targetDir) || isSameOrInside(targetDir, p);
       if (isAffected(actPath)) {
         if (activePaneIsRight) await loadRightDirectory(actPath); else await loadDirectory(actPath);
       }
@@ -1716,7 +1689,7 @@ export default function App() {
       const failed = result?.items?.filter((i: any) => !i.success).length ?? 0;
 
       if (failed === 0) {
-        const targetFolderName = targetDir.split(/[\\/]/).pop() || targetDir;
+        const targetFolderName = baseName(targetDir);
         const displayName = createdItem?.name || firstItemName;
         showToast({
           type: 'success',
@@ -1776,8 +1749,8 @@ export default function App() {
   const addFolderToQuickAccess = async () => {
     const chosen = await api.selectFolder();
     if (chosen) {
-      const label = chosen.split(/[\\/]/).pop() || chosen;
-      const exists = quickAccess.some(q => q.path.toLowerCase() === chosen.toLowerCase());
+      const label = baseName(chosen);
+      const exists = quickAccess.some(q => pathsEqual(q.path, chosen));
       if (!exists) {
         const newList = [...quickAccess, { label, path: chosen }];
         setQuickAccess(newList);
@@ -2188,8 +2161,8 @@ export default function App() {
     if (act === 'pin-quick') {
       const targetDir = entry ? entry.path : (activePaneIsRight ? rightCurrentPath : currentPath);
       if (!targetDir) return;
-      const label = entry ? entry.name : (targetDir.split(/[\\/]/).pop() || targetDir);
-      const exists = quickAccess.some(q => q.path.toLowerCase() === targetDir.toLowerCase());
+      const label = entry ? entry.name : (baseName(targetDir));
+      const exists = quickAccess.some(q => pathsEqual(q.path, targetDir));
       if (!exists) {
         const newList = [...quickAccess, { label, path: targetDir }];
         setQuickAccess(newList);
@@ -2201,7 +2174,7 @@ export default function App() {
     if (act === 'open-cmd' || act === 'open-powershell') {
       let targetDir = activePaneIsRight ? rightCurrentPath : currentPath;
       if (entry) {
-        targetDir = entry.isDirectory ? entry.path : entry.path.substring(0, Math.max(entry.path.lastIndexOf('\\'), entry.path.lastIndexOf('/')) || entry.path.length);
+        targetDir = entry.isDirectory ? entry.path : (dirName(entry.path) || entry.path);
       }
       if (api) {
         const sh = act === 'open-cmd' ? 'cmd' : 'powershell';
@@ -2339,7 +2312,7 @@ export default function App() {
           All custom buttons are on the LEFT so they don't get covered by the OS min/max/close controls on the right. */}
       <div
         className="flex items-center gap-1.5 px-2 pr-8 bg-[#18181b] border-b border-zinc-800"
-        style={{ WebkitAppRegion: 'drag', height: '40px' } as any}
+        style={{ WebkitAppRegion: 'drag', height: '40px', ...(IS_MAC ? { paddingLeft: '78px' } : {}) } as any}
       >
         <div className="px-1.5 text-[10px] tracking-[1px] text-zinc-500 font-semibold select-none">JABROFILES</div>
 
@@ -2347,7 +2320,7 @@ export default function App() {
         <button 
           onClick={toggleSidebar} 
           className={`nav-button ${sidebarCollapsed ? 'text-zinc-500 hover:text-zinc-200' : 'text-blue-400 hover:text-blue-300'}`} 
-          title={sidebarCollapsed ? "Expand sidebar (Ctrl+B)" : "Collapse sidebar (Ctrl+B)"} 
+          title={sidebarCollapsed ? `Expand sidebar (${MOD_KEY}+B)` : `Collapse sidebar (${MOD_KEY}+B)`} 
           style={{ WebkitAppRegion: 'no-drag' } as any}
         >
           {sidebarCollapsed ? <PanelLeft size={15} /> : <PanelLeftClose size={15} />}
@@ -2381,7 +2354,7 @@ export default function App() {
         >
           <Calculator size={13} /> Auto
         </button>
-        <button onClick={activeCalculateAllVisibleSizes} className="nav-button" title="Calculate sizes for every folder in active pane (Ctrl+R)" style={{ WebkitAppRegion: 'no-drag' } as any}>
+        <button onClick={activeCalculateAllVisibleSizes} className="nav-button" title={`Calculate sizes for every folder in active pane (${MOD_KEY}+R)`} style={{ WebkitAppRegion: 'no-drag' } as any}>
           <Calculator size={14} />
         </button>
 
@@ -2514,7 +2487,7 @@ export default function App() {
         <button
           onClick={addNewTab}
           className="p-1 rounded hover:bg-zinc-800 text-zinc-400 hover:text-white transition ml-0.5 cursor-pointer flex-shrink-0"
-          title="Open New Tab (Ctrl+T)"
+          title={`Open New Tab (${MOD_KEY}+T)`}
         >
           <Plus size={14} />
         </button>
@@ -2570,8 +2543,8 @@ export default function App() {
           <div className="flex items-center flex-1 min-w-0 h-8 box-border bg-zinc-900/60 border border-zinc-800/80 rounded px-2.5 hover:border-zinc-700/80 transition-colors">
             <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5 max-w-full">
               {parseBreadcrumbs(activeCurrentPath, collections).map((b, idx, arr) => {
-                const isDrive = /^[a-zA-Z]:$/i.test(b.name);
-                const driveMatch = isDrive ? drives.find(d => d.name.toUpperCase() === b.name.toUpperCase()) : null;
+                const driveMatch = drives.find(d => pathsEqual(normalizeDirPath(d.path), b.fullPath)) || null;
+                const isDrive = !!driveMatch;
                 const driveTitle = driveMatch?.label
                   ? `${driveMatch.label} (${b.name}) • ${driveMatch.path}${driveMatch.freeSpace != null && driveMatch.size != null ? ` (${formatSize(driveMatch.freeSpace)} free of ${formatSize(driveMatch.size)})` : ''}`
                   : (driveMatch?.size != null && driveMatch?.freeSpace != null ? `${b.name} (${formatSize(driveMatch.freeSpace)} free of ${formatSize(driveMatch.size)})` : b.fullPath);
@@ -2660,7 +2633,7 @@ export default function App() {
                   setIsEditingPath(true);
                 }}
                 className="p-1 rounded hover:bg-zinc-800 text-zinc-500 hover:text-zinc-300 cursor-pointer"
-                title="Edit path as text (Ctrl+L)"
+                title={`Edit path as text (${MOD_KEY}+L)`}
               >
                 <Edit3 size={13} />
               </button>
@@ -2685,7 +2658,7 @@ export default function App() {
           <button
             onClick={toggleSidebar}
             className="w-5.5 flex items-center justify-center bg-[#111113] hover:bg-[#18181b] border-r border-zinc-800 text-zinc-500 hover:text-blue-400 transition cursor-pointer select-none group flex-shrink-0"
-            title="Expand sidebar (Ctrl+B)"
+            title={`Expand sidebar (${MOD_KEY}+B)`}
           >
             <PanelLeftOpen size={14} className="group-hover:scale-110 transition-transform" />
           </button>
@@ -2713,7 +2686,7 @@ export default function App() {
                     <button
                       onClick={toggleSidebar}
                       className="text-zinc-500 hover:text-zinc-300 p-0.5 rounded transition cursor-pointer"
-                      title="Collapse sidebar (Ctrl+B)"
+                      title={`Collapse sidebar (${MOD_KEY}+B)`}
                     >
                       <PanelLeftClose size={13} />
                     </button>
@@ -2739,7 +2712,7 @@ export default function App() {
                   </div>
                 ))}
 
-                <div className="px-3 pt-4 pb-1 text-[10px] font-semibold tracking-wider text-zinc-500">THIS PC</div>
+                <div className="px-3 pt-4 pb-1 text-[10px] font-semibold tracking-wider text-zinc-500">{IS_WIN ? 'THIS PC' : 'LOCATIONS'}</div>
                 {drives.length > 0 ? drives.map(d => {
                   const driveHoverLabel = d.label ? `${d.label} (${d.name})` : d.name;
                   const driveTooltip = d.size != null && d.freeSpace != null 
@@ -2753,7 +2726,7 @@ export default function App() {
                       onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); showDriveCtx(e, d); }}
                       onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
                       onDrop={(e) => handleDropToPath(e, d.path)}
-                      className={`mx-1.5 px-2.5 py-1 rounded flex items-center gap-2 cursor-pointer ${(activePaneIsRight ? rightCurrentPath : currentPath).startsWith(d.path) ? 'bg-zinc-800' : 'hover:bg-zinc-900'}`}
+                      className={`mx-1.5 px-2.5 py-1 rounded flex items-center gap-2 cursor-pointer ${volumeKey(activePaneIsRight ? rightCurrentPath : currentPath) === volumeKey(d.path) ? 'bg-zinc-800' : 'hover:bg-zinc-900'}`}
                       title={driveTooltip}
                     >
                       <HardDrive size={15} className="text-emerald-400 flex-shrink-0" />
@@ -3015,7 +2988,7 @@ export default function App() {
                     <button
                       onClick={handleOpenCacheFolder}
                       className="flex-1 py-1.5 px-2 rounded bg-zinc-800 hover:bg-zinc-700 text-zinc-300 flex items-center justify-center gap-1.5 transition text-[11px]"
-                      title="Reveal central thumbnail cache folder in Windows Explorer"
+                      title={`Reveal central thumbnail cache folder in ${FILE_MANAGER_NAME}`}
                     >
                       <ExternalLink size={12} /> Open Folder
                     </button>
@@ -3158,7 +3131,7 @@ export default function App() {
                     </div>
                     <div className="text-base font-semibold text-zinc-200">This Collection is Empty</div>
                     <p className="text-xs text-zinc-400 leading-relaxed">
-                      Drag & drop files or folders here from other tabs, drives, or File Explorer to add references without moving them.
+                      Drag & drop files or folders here from other tabs, drives, or {FILE_MANAGER_NAME} to add references without moving them.
                     </p>
                     <button
                       onClick={() => handlePickFilesForCollection(currentPath.slice('collection:'.length))}
@@ -3242,7 +3215,7 @@ export default function App() {
                             }}
                             onDragOver={entry.isDirectory ? (e) => {
                               e.preventDefault();
-                              e.dataTransfer.dropEffect = e.ctrlKey ? 'copy' : 'move';
+                              e.dataTransfer.dropEffect = isCopyModifier(e) ? 'copy' : 'move';
                               setDragOverFolderPath(entry.path);
                             } : undefined}
                             onDragLeave={entry.isDirectory ? () => {
@@ -3316,7 +3289,7 @@ export default function App() {
                     </span>
                     <span className="text-[10px] text-zinc-500 truncate" title={rightCurrentPath}>
                       {splitMode === 'linked'
-                        ? (selected ? `Contents of: ${selected.split(/[\\/]/).filter(Boolean).pop() || selected}` : rightCurrentPath)
+                        ? (selected ? `Contents of: ${baseName(selected)}` : rightCurrentPath)
                         : rightCurrentPath
                       }
                     </span>
@@ -3367,7 +3340,7 @@ export default function App() {
                       </div>
                       <div className="text-base font-semibold text-zinc-200">This Collection is Empty</div>
                       <p className="text-xs text-zinc-400 leading-relaxed">
-                        Drag & drop files or folders here from other tabs, drives, or File Explorer to add references without moving them.
+                        Drag & drop files or folders here from other tabs, drives, or {FILE_MANAGER_NAME} to add references without moving them.
                       </p>
                       <button
                         onClick={() => handlePickFilesForCollection(rightCurrentPath.slice('collection:'.length))}
@@ -3451,7 +3424,7 @@ export default function App() {
                               }}
                               onDragOver={entry.isDirectory ? (e) => {
                                 e.preventDefault();
-                                e.dataTransfer.dropEffect = e.ctrlKey ? 'copy' : 'move';
+                                e.dataTransfer.dropEffect = isCopyModifier(e) ? 'copy' : 'move';
                                 setDragOverFolderPath(entry.path);
                               } : undefined}
                               onDragLeave={entry.isDirectory ? () => {
@@ -3527,7 +3500,7 @@ export default function App() {
                 <button
                   onClick={() => pasteFromClipboard()}
                   className="ml-1 px-1.5 py-0.5 text-[10px] bg-blue-600 hover:bg-blue-500 text-white rounded font-medium cursor-pointer"
-                  title="Paste to active folder (Ctrl+V)"
+                  title={`Paste to active folder (${MOD_KEY}+V)`}
                 >
                   Paste
                 </button>
@@ -3543,7 +3516,7 @@ export default function App() {
             {selectedEntry && <div className="ml-auto truncate max-w-[420px] text-zinc-500">{selectedEntry.path}</div>}
             {operationStatus && <div className="ml-2 text-blue-400 truncate max-w-[280px]">{operationStatus}</div>}
             <div className="ml-auto text-[10px] text-zinc-500 hidden md:flex items-center gap-1.5">
-              <span>Ctrl+R = calc all • Click folder size to scan</span>
+              <span>{MOD_KEY}+R = calc all • Click folder size to scan</span>
               {dualPane && (
                 <button
                   onClick={() => {
@@ -3626,16 +3599,18 @@ export default function App() {
                 </div>
                 <div className="border-t border-zinc-700 my-0.5" />
                 <div className="context-menu-item" onClick={() => ctxAction('open-cmd')}>
-                  Open Command Prompt here
+                  {IS_WIN ? 'Open Command Prompt here' : 'Open Terminal here'}
                 </div>
-                <div className="context-menu-item" onClick={() => ctxAction('open-powershell')}>
-                  Open PowerShell here
-                </div>
+                {IS_WIN && (
+                  <div className="context-menu-item" onClick={() => ctxAction('open-powershell')}>
+                    Open PowerShell here
+                  </div>
+                )}
                 <div className="border-t border-zinc-700 my-0.5" />
                 <div className="context-menu-item" onClick={() => ctxAction('paste')}>
                   Paste
                 </div>
-                {clipboard && clipboard.paths.length > 0 && (
+                {IS_WIN && clipboard && clipboard.paths.length > 0 && (
                   <div
                     className="context-menu-item text-amber-300 hover:text-amber-200"
                     onClick={() => {
@@ -3661,7 +3636,7 @@ export default function App() {
                 {ctx.entry.isDirectory ? 'Open' : 'Open file'}
               </div>
               <div className="context-menu-item" onClick={() => ctxAction('explorer')}>
-                Show in Explorer
+                {IS_MAC ? 'Reveal in Finder' : `Show in ${FILE_MANAGER_NAME}`}
               </div>
               {!ctx.entry.isDirectory && (
                 <div className="context-menu-item" onClick={() => ctxAction('save-as')}>
@@ -3704,7 +3679,7 @@ export default function App() {
                   >
                     {collections.map(c => {
                       const colColor = getColColor(c.color);
-                      const alreadyIn = c.paths.some(p => p.toLowerCase() === ctx.entry!.path.toLowerCase());
+                      const alreadyIn = c.paths.some(p => pathsEqual(p, ctx.entry!.path));
                       return (
                         <div
                           key={c.id}
@@ -3749,17 +3724,19 @@ export default function App() {
                   <Calculator size={14} /> Calculate size now
                 </div>
               )}
-              {ctx.entry?.isDirectory && !quickAccess.some(q => q.path.toLowerCase() === ctx.entry!.path.toLowerCase()) && (
+              {ctx.entry?.isDirectory && !quickAccess.some(q => pathsEqual(q.path, ctx.entry!.path)) && (
                 <div className="context-menu-item" onClick={() => ctxAction('pin-quick')}>
                   Pin to Quick Access
                 </div>
               )}
               <div className="context-menu-item" onClick={() => ctxAction('open-cmd')}>
-                Open Command Prompt here
+                {IS_WIN ? 'Open Command Prompt here' : 'Open Terminal here'}
               </div>
-              <div className="context-menu-item" onClick={() => ctxAction('open-powershell')}>
-                Open PowerShell here
-              </div>
+              {IS_WIN && (
+                <div className="context-menu-item" onClick={() => ctxAction('open-powershell')}>
+                  Open PowerShell here
+                </div>
+              )}
               <div className="context-menu-item" onClick={() => ctxAction('copy-item')}>
                 Copy
               </div>
@@ -3769,7 +3746,7 @@ export default function App() {
               <div className="context-menu-item" onClick={() => ctxAction('paste')}>
                 Paste
               </div>
-              {clipboard && clipboard.paths.length > 0 && (
+              {IS_WIN && clipboard && clipboard.paths.length > 0 && (
                 <div
                   className="context-menu-item text-amber-300 hover:text-amber-200"
                   onClick={() => {
@@ -3802,7 +3779,7 @@ export default function App() {
             Open
           </div>
           <div className="context-menu-item" onClick={() => { api.showInExplorer(driveCtx.drive.path); closeDriveCtx(); }}>
-            Show in Explorer
+            {IS_MAC ? 'Reveal in Finder' : `Show in ${FILE_MANAGER_NAME}`}
           </div>
           <div className="border-t border-zinc-700 my-0.5" />
           <div className="context-menu-item" onClick={async () => {
@@ -3810,15 +3787,17 @@ export default function App() {
             closeDriveCtx();
             if (api) await (api as any).openTerminal(p, 'cmd');
           }}>
-            Open Command Prompt here
+            {IS_WIN ? 'Open Command Prompt here' : 'Open Terminal here'}
           </div>
-          <div className="context-menu-item" onClick={async () => {
-            const p = driveCtx.drive.path;
-            closeDriveCtx();
-            if (api) await (api as any).openTerminal(p, 'powershell');
-          }}>
-            Open PowerShell here
-          </div>
+          {IS_WIN && (
+            <div className="context-menu-item" onClick={async () => {
+              const p = driveCtx.drive.path;
+              closeDriveCtx();
+              if (api) await (api as any).openTerminal(p, 'powershell');
+            }}>
+              Open PowerShell here
+            </div>
+          )}
           <div className="border-t border-zinc-700 my-0.5" />
           <div className="context-menu-item" onClick={() => {
             navigator.clipboard.writeText(driveCtx.drive.path);
@@ -3906,7 +3885,7 @@ export default function App() {
           {/* Top Control Header Bar (Integrated with Windows titlebar overlay) */}
           <div 
             className="h-10 box-border flex items-center justify-between px-3 bg-[#18181b] border-b border-zinc-800 text-sm select-none z-50 flex-shrink-0"
-            style={{ paddingRight: '145px', WebkitAppRegion: 'drag' } as any}
+            style={IS_MAC ? { paddingLeft: '78px', WebkitAppRegion: 'drag' } as any : { paddingRight: '145px', WebkitAppRegion: 'drag' } as any}
           >
             {/* Left side: Back button & File info */}
             <div 
@@ -4179,8 +4158,8 @@ export default function App() {
                       {elevationPrompt.customDestFileName
                         ? `"${elevationPrompt.customDestFileName}"`
                         : (elevationPrompt.sources.length === 1
-                            ? `"${elevationPrompt.sources[0].split(/[\\/]/).pop()}"`
-                            : `${elevationPrompt.sources.slice(0, 3).map(s => `"${s.split(/[\\/]/).pop()}"`).join(', ')}${elevationPrompt.sources.length > 3 ? ` and ${elevationPrompt.sources.length - 3} more` : ''}`)}
+                            ? `"${baseName(elevationPrompt.sources[0])}"`
+                            : `${elevationPrompt.sources.slice(0, 3).map(s => `"${baseName(s)}"`).join(', ')}${elevationPrompt.sources.length > 3 ? ` and ${elevationPrompt.sources.length - 3} more` : ''}`)}
                     </span>
                   </div>
                 </div>

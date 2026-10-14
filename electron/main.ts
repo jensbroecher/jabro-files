@@ -5,11 +5,12 @@ import * as fsSync from 'node:fs';
 import { Readable } from 'node:stream';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { exec, spawn } from 'node:child_process';
+import { exec, execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -113,11 +114,14 @@ function createWindow() {
     backgroundColor: '#0f0f10',
     title: 'JabroFiles',
     titleBarStyle: 'hidden',
+    // Windows/Linux draw min/max/close as an overlay on the right; macOS keeps its native
+    // traffic lights, vertically centered in the 40px custom title bar.
     titleBarOverlay: {
       color: '#18181b',
       symbolColor: '#a1a1aa',
       height: 40,
     },
+    ...(process.platform === 'darwin' ? { trafficLightPosition: { x: 14, y: 13 } } : {}),
     webPreferences: {
       // Robust preload path that works in dev, `electron .`, and packaged (asar) builds
       preload: getPreloadPath(),
@@ -181,8 +185,8 @@ function createWindow() {
     }
   });
 
-  mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
-    console.log(`[Renderer LOG ${level}] ${message} (${sourceId}:${line})`);
+  mainWindow.webContents.on('console-message', ({ level, message, lineNumber, sourceId }) => {
+    console.log(`[Renderer LOG ${level}] ${message} (${sourceId}:${lineNumber})`);
   });
 
   mainWindow.on('moved', () => saveBounds(mainWindow!));
@@ -193,6 +197,10 @@ function createWindow() {
     mainWindow = null;
   });
 }
+
+ipcMain.on('get-home-dir', (event) => {
+  event.returnValue = os.homedir();
+});
 
 app.whenReady().then(() => {
   // Enable Cross-Origin Isolation for high-performance zero-copy WebAssembly multi-threading (used by Gaussian Splatting)
@@ -581,6 +589,13 @@ function normalizeTargetDirectory(target: string): string {
   return trimmed;
 }
 
+// Windows and default macOS volumes are case-insensitive; Linux is case-sensitive.
+function samePath(a: string, b: string): boolean {
+  const ra = path.resolve(a);
+  const rb = path.resolve(b);
+  return process.platform === 'linux' ? ra === rb : ra.toLowerCase() === rb.toLowerCase();
+}
+
 function friendlyErrorMessage(err: any, itemPath: string): string {
   const code = err?.code;
   const name = path.basename(itemPath);
@@ -597,7 +612,7 @@ function friendlyErrorMessage(err: any, itemPath: string): string {
     return `Not enough free disk space on the target drive to copy "${name}".`;
   }
   if (code === 'EINVAL') {
-    return `The file name or path "${name}" contains characters not supported by Windows.`;
+    return `The file name or path "${name}" contains characters not supported by the file system.`;
   }
   if (err?.message?.includes('robocopy failed')) {
     return `Folder copy failed for "${name}" (${err.message}).`;
@@ -687,8 +702,9 @@ async function copySingleFile(src: string, dest: string): Promise<void> {
 }
 
 async function copyFolder(src: string, dest: string): Promise<void> {
-  const cleanSrc = src.replace(/[\\/]+$/, '');
-  const cleanDest = dest.replace(/[\\/]+$/, '');
+  const trailingSep = process.platform === 'win32' ? /[\\/]+$/ : /\/+$/;
+  const cleanSrc = src.replace(trailingSep, '') || src;
+  const cleanDest = dest.replace(trailingSep, '') || dest;
 
   if (process.platform === 'win32') {
     let robocopyFailed = false;
@@ -740,7 +756,7 @@ async function copyFolder(src: string, dest: string): Promise<void> {
   }
 
   // Built-in recursive copy fallback
-  await fs.cp(src, dest, { recursive: true, force: true });
+  await fs.cp(src, dest, { recursive: true, force: true, preserveTimestamps: true });
 }
 
 async function copyItem(src: string, dest: string): Promise<void> {
@@ -852,7 +868,7 @@ async function performElevatedOperation(params: {
         isDirectory = st.isDirectory();
       } catch {}
 
-      const isSameFolder = path.dirname(path.resolve(src)).toLowerCase() === path.resolve(targetDir).toLowerCase();
+      const isSameFolder = samePath(path.dirname(path.resolve(src)), targetDir);
       const dest = (params.customDestFileName && params.sources.length === 1)
         ? path.join(targetDir, params.customDestFileName)
         : await getUniqueDestination(targetDir, name, isSameFolder && !isMove);
@@ -1048,11 +1064,25 @@ try {
   });
 }
 
+// Administrator elevation is only implemented for Windows (UAC). On other platforms a
+// permission failure is reported as a normal error instead of offering an elevation prompt.
+function handleFileOp(channel: string, listener: (event: Electron.IpcMainInvokeEvent, ...args: any[]) => any) {
+  ipcMain.handle(channel, async (event, ...args) => {
+    const result = await listener(event, ...args);
+    if (process.platform !== 'win32' && result && result.requiresElevation) {
+      const { requiresElevation: _drop, ...rest } = result;
+      const message = rest.summary || rest.error || 'Permission denied.';
+      return { ...rest, success: false, error: rest.error || message };
+    }
+    return result;
+  });
+}
+
 ipcMain.handle('perform-elevated-op', async (_e, params) => {
   return performElevatedOperation(params);
 });
 
-ipcMain.handle('copy-files', async (_e, { sources, target }: { sources: string[]; target: string }) => {
+handleFileOp('copy-files', async (_e, { sources, target }: { sources: string[]; target: string }) => {
   let targetDir = normalizeTargetDirectory(target);
   try {
     const tStat = await fs.stat(targetDir);
@@ -1101,7 +1131,7 @@ ipcMain.handle('copy-files', async (_e, { sources, target }: { sources: string[]
         throw new Error(`Source "${name}" does not exist or cannot be accessed.`);
       }
 
-      const isSameFolder = path.dirname(path.resolve(src)).toLowerCase() === path.resolve(targetDir).toLowerCase();
+      const isSameFolder = samePath(path.dirname(path.resolve(src)), targetDir);
       const dest = await getUniqueDestination(targetDir, name, isSameFolder);
 
       await copyItem(src, dest);
@@ -1160,7 +1190,7 @@ ipcMain.handle('copy-files', async (_e, { sources, target }: { sources: string[]
   };
 });
 
-ipcMain.handle('move-files', async (_e, { sources, target }: { sources: string[]; target: string }) => {
+handleFileOp('move-files', async (_e, { sources, target }: { sources: string[]; target: string }) => {
   let targetDir = normalizeTargetDirectory(target);
   try {
     const tStat = await fs.stat(targetDir);
@@ -1209,7 +1239,7 @@ ipcMain.handle('move-files', async (_e, { sources, target }: { sources: string[]
         throw new Error(`Source "${name}" does not exist or cannot be accessed.`);
       }
 
-      const isSameFolder = path.dirname(path.resolve(src)).toLowerCase() === path.resolve(targetDir).toLowerCase();
+      const isSameFolder = samePath(path.dirname(path.resolve(src)), targetDir);
       // Moving to the exact same folder is a safe no-op
       if (isSameFolder) {
         results.push({ src, dest: src, name, success: true });
@@ -1290,7 +1320,7 @@ ipcMain.handle('move-files', async (_e, { sources, target }: { sources: string[]
   };
 });
 
-ipcMain.handle('create-folder', async (_e, targetDir: string) => {
+handleFileOp('create-folder', async (_e, targetDir: string) => {
   try {
     const newPath = await createNewFolder(targetDir);
     return newPath;
@@ -1363,7 +1393,7 @@ ipcMain.handle('get-entries-stats', async (_e, filePaths: string[]): Promise<Dir
   return results;
 });
 
-ipcMain.handle('save-file-as', async (_e, sourcePath: string) => {
+handleFileOp('save-file-as', async (_e, sourcePath: string) => {
   if (!mainWindow) return { canceled: true };
   try {
     const stat = await fs.stat(sourcePath);
@@ -1395,7 +1425,7 @@ ipcMain.handle('save-file-as', async (_e, sourcePath: string) => {
   const destPath = result.filePath;
 
   // Check if destination is exactly the same as source
-  if (path.resolve(sourcePath).toLowerCase() === path.resolve(destPath).toLowerCase()) {
+  if (samePath(sourcePath, destPath)) {
     return {
       success: false,
       error: 'Destination is identical to the source file.',
@@ -1464,26 +1494,94 @@ ipcMain.handle('read-binary-file', async (_e, filePath: string): Promise<Buffer 
   }
 });
 
-ipcMain.handle('open-terminal', async (_e, folderPath: string, shell: 'cmd' | 'powershell' = 'cmd') => {
+ipcMain.handle('open-terminal', async (_e, folderPath: string, shellName: 'cmd' | 'powershell' = 'cmd') => {
   try {
-    const escaped = folderPath.replace(/"/g, '\\"');
-    let command: string;
-    if (shell === 'powershell') {
-      // Open PowerShell in the folder
-      command = `start powershell -NoExit -Command "Set-Location -LiteralPath '${escaped}'"`;
+    if (process.platform === 'win32') {
+      const escaped = folderPath.replace(/"/g, '\\"');
+      const command = shellName === 'powershell'
+        ? `start powershell -NoExit -Command "Set-Location -LiteralPath '${escaped}'"`
+        : `start cmd /K "cd /D \\"${escaped}\\""`;
+      await execAsync(command, { cwd: folderPath });
+    } else if (process.platform === 'darwin') {
+      await execFileAsync('open', ['-a', 'Terminal', folderPath]);
     } else {
-      // Open classic Command Prompt in the folder
-      command = `start cmd /K "cd /D \\"${escaped}\\""`;
+      // Linux: try the common terminal emulators until one launches
+      const candidates: Array<[string, string[]]> = [
+        ['x-terminal-emulator', []],
+        ['gnome-terminal', ['--working-directory', folderPath]],
+        ['konsole', ['--workdir', folderPath]],
+        ['xfce4-terminal', ['--working-directory', folderPath]],
+        ['xterm', []],
+      ];
+      for (const [cmd, args] of candidates) {
+        const launched = await new Promise<boolean>((resolve) => {
+          const child = spawn(cmd, args, { cwd: folderPath, detached: true, stdio: 'ignore' });
+          child.once('error', () => resolve(false));
+          child.once('spawn', () => { child.unref(); resolve(true); });
+        });
+        if (launched) break;
+      }
     }
-    await execAsync(command, { cwd: folderPath });
   } catch (err) {
     console.error('Failed to open terminal', err);
   }
 });
 
+type DriveEntry = { name: string; path: string; label?: string; size?: number; freeSpace?: number };
+
+// macOS: the startup volume plus everything mounted under /Volumes.
+// Linux: root plus removable/mounted media under /media, /run/media and /mnt.
+async function getUnixVolumes(): Promise<DriveEntry[]> {
+  const mountParents = process.platform === 'darwin'
+    ? ['/Volumes']
+    : (() => {
+        const user = os.userInfo().username;
+        return [`/media/${user}`, `/run/media/${user}`, '/media', '/mnt'];
+      })();
+
+  let rootLabel: string | undefined = process.platform === 'darwin' ? 'Macintosh HD' : undefined;
+  const volumes: DriveEntry[] = [];
+  const seen = new Set<string>(['/']);
+
+  for (const parent of mountParents) {
+    let names: string[] = [];
+    try {
+      names = await fs.readdir(parent);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (name.startsWith('.')) continue;
+      const full = path.join(parent, name);
+      try {
+        const real = await fs.realpath(full);
+        if (real === '/') {
+          // The startup volume shows up in /Volumes as a symlink to "/" and carries its display name
+          if (process.platform === 'darwin') rootLabel = name;
+          continue;
+        }
+        const stat = await fs.stat(full);
+        if (!stat.isDirectory() || seen.has(real)) continue;
+        seen.add(real);
+        volumes.push({ name, path: full });
+      } catch {}
+    }
+  }
+
+  const all: DriveEntry[] = [{ name: '/', path: '/', label: rootLabel }, ...volumes];
+  await Promise.all(all.map(async (d) => {
+    try {
+      const st = await fs.statfs(d.path);
+      d.size = Number(st.blocks) * Number(st.bsize);
+      d.freeSpace = Number(st.bavail) * Number(st.bsize);
+    } catch {}
+  }));
+  return all;
+}
+
 ipcMain.handle('get-drives', async (): Promise<Array<{ name: string; path: string; label?: string; size?: number; freeSpace?: number }>> => {
   if (process.platform !== 'win32') {
-    return [{ name: '/', path: '/' }];
+    return getUnixVolumes();
   }
   // 1. Primary: Query Windows logical disks with volume names, capacity, and available space using WMI/CIM
   try {

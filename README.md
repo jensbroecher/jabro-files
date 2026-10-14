@@ -1,8 +1,8 @@
 # JabroFiles
 
-Fast local file browser for Windows with **recursive folder sizes** shown directly in the listing — no need to open folders to see how big they are.
+Fast local file browser for Windows and macOS with **recursive folder sizes** shown directly in the listing — no need to open folders to see how big they are.
 
-Built with Electron + React + Tailwind. Runs great on Windows 11.
+Built with Electron + React + Tailwind. Runs on Windows 11 and macOS. The app opens in your home folder.
 
 ## Features
 
@@ -13,8 +13,8 @@ Built with Electron + React + Tailwind. Runs great on Windows 11.
 - Sort by size, name, or date
 - Filter / search in current folder
 - Keyboard: Backspace = up, F5 = refresh, Ctrl+R = calculate all visible, arrows + Enter
-- Context menu (right click): Open, Show in Explorer, Copy path, Calculate size
-- Native folder picker + "Open in Explorer"
+- Context menu (right click): Open, Show in Explorer / Reveal in Finder, Copy path, Calculate size
+- Native folder picker + "Reveal in Explorer / Finder"
 - Sidebar with quick access + detected drives
 - Efficient size walker (limited concurrency, async)
 
@@ -55,7 +55,7 @@ Then open http://localhost:5173 in a browser.
 - In the list, **click the Size column** on any subfolder row to calculate its total size (all files inside, recursively).
 - Use **Ctrl + R** or the calculator button to scan sizes for everything visible in the current folder.
 - The "Auto" button toggles whether it starts calculating sizes automatically when you enter a directory.
-- Right-click rows for context menu (Show in Explorer, Copy path, etc.).
+- Right-click rows for context menu (Show in Explorer / Reveal in Finder, Copy path, etc.).
 - Large folders (e.g. node_modules, game installs) can take a few seconds the first time — this is expected. The UI stays responsive.
 
 ## Build a distributable
@@ -90,4 +90,4 @@ Outputs to `release/` folder:
 - electron-builder for packaging
 - Custom recursive size implementation (no heavy deps)
 
-Created for local use on Windows 11.
+Created for local use on Windows 11 and macOS. Administrator-elevated paste/copy (UAC) and the PowerShell/Command Prompt entries are Windows-only; macOS opens Terminal.app instead.

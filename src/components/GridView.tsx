@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { isCopyModifier } from '../utils/paths';
 import { 
   Folder, File, FileText, Sparkles, Box, Eye, Calculator, RefreshCw, 
   Music, Film, Code, Database, FileSpreadsheet, Archive
@@ -345,7 +346,7 @@ export const GridView: React.FC<GridViewProps> = ({
               onDragOver={entry.isDirectory ? (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                e.dataTransfer.dropEffect = e.ctrlKey ? 'copy' : 'move';
+                e.dataTransfer.dropEffect = isCopyModifier(e) ? 'copy' : 'move';
               } : undefined}
               onDrop={entry.isDirectory ? (e) => {
                 e.stopPropagation();

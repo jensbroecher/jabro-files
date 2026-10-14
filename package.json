@@ -4,7 +4,7 @@
   "version": "0.1.1",
   "author": "JabroFiles",
   "type": "module",
-  "description": "JabroFiles - A fast local file browser with recursive folder sizes for Windows",
+  "description": "JabroFiles - A fast local file browser with recursive folder sizes for Windows and macOS",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
@@ -19,7 +19,7 @@
     "@types/react": "^19.2.16",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.2",
-    "electron": "^31.7.7",
+    "electron": "^44.7.1",
     "electron-builder": "^24.13.3",
     "esbuild": "^0.28.0",
     "tailwindcss": "^4.1.8",
@@ -61,6 +61,18 @@
         {
           "target": "portable",
           "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "mac": {
+      "category": "public.app-category.utilities",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
             "x64"
           ]
         }

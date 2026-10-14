@@ -79,11 +79,11 @@ const api = {
   openPath: (target: string): Promise<void> =>
     ipcRenderer.invoke('open-path', target),
 
-  // Reveal in Windows Explorer
+  // Reveal in the OS file manager (Explorer / Finder)
   showInExplorer: (target: string): Promise<void> =>
     ipcRenderer.invoke('show-in-explorer', target),
 
-  // List available drives (C:, D:, H: etc)
+  // List available drives / volumes (C:, D: ... on Windows; / and /Volumes/* on macOS)
   getDrives: (): Promise<DriveInfo[]> =>
     ipcRenderer.invoke('get-drives'),
 
@@ -130,6 +130,7 @@ const api = {
   detectPlyType: (filePath: string): Promise<'gaussian-splat' | '3d'> =>
     ipcRenderer.invoke('detect-ply-type', filePath),
 
+  // `shell` is only honored on Windows; macOS/Linux open the default terminal
   openTerminal: (folderPath: string, shell: 'cmd' | 'powershell' = 'cmd'): Promise<void> =>
     ipcRenderer.invoke('open-terminal', folderPath, shell),
 
@@ -177,8 +178,9 @@ const api = {
   getEntriesStats: (filePaths: string[]): Promise<any[]> =>
     ipcRenderer.invoke('get-entries-stats', filePaths),
 
-  // Optional: platform info
+  // Platform info and the user's home directory (initial folder for the file browser)
   platform: process.platform,
+  homeDir: ipcRenderer.sendSync('get-home-dir') as string,
 };
 
 contextBridge.exposeInMainWorld('api', api);
