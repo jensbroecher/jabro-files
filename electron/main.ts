@@ -132,8 +132,7 @@ function buildAppMenu(): Menu {
         { role: 'resetZoom' },
         { role: 'zoomIn' },
         { role: 'zoomOut' },
-        { type: 'separator' },
-        { role: 'togglefullscreen' },
+        ...(isMac ? [] : [{ type: 'separator' as const }, { role: 'togglefullscreen' as const }]),
       ],
     },
     {

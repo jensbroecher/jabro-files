@@ -1030,8 +1030,7 @@ function Ve() {
 				{ role: "resetZoom" },
 				{ role: "zoomIn" },
 				{ role: "zoomOut" },
-				{ type: "separator" },
-				{ role: "togglefullscreen" }
+				...e ? [] : [{ type: "separator" }, { role: "togglefullscreen" }]
 			]
 		},
 		{
