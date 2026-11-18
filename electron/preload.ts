@@ -212,6 +212,9 @@ const api = {
   readTextFile: (filePath: string): Promise<string> =>
     ipcRenderer.invoke('read-text-file', filePath),
 
+  writeTextFile: (filePath: string, content: string): Promise<{ success: boolean; error?: string }> =>
+    ipcRenderer.invoke('write-text-file', { filePath, content }),
+
   readBinaryFile: (filePath: string): Promise<Uint8Array | null> =>
     ipcRenderer.invoke('read-binary-file', filePath),
 

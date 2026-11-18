@@ -26,12 +26,13 @@ export interface SizeResult {
 export interface GridViewProps {
   entries: DirEntry[];
   selectedPath: string | null;
+  selectedPaths?: string[];
   sizeCache: Record<string, SizeResult>;
   clipboard: { paths: string[]; isCut: boolean } | null;
   highlightedPath: string | null;
   dragOverFolderPath: string | null;
   tileSize?: 'small' | 'medium' | 'large';
-  onSelect: (path: string) => void;
+  onSelect: (path: string, e?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => void;
   onOpen: (entry: DirEntry) => void;
   onContextMenu: (e: React.MouseEvent, entry: DirEntry) => void;
   onPaneContextMenu?: (e: React.MouseEvent) => void;
@@ -61,6 +62,7 @@ const SPREADSHEET_EXTS = new Set(['.csv', '.xlsx', '.xls', '.tsv']);
 export const GridView: React.FC<GridViewProps> = ({
   entries,
   selectedPath,
+  selectedPaths,
   sizeCache,
   clipboard,
   highlightedPath,
@@ -299,6 +301,11 @@ export const GridView: React.FC<GridViewProps> = ({
     }
   }, [entries, selectedPath, onOpen, onQuickLook, onSelect]);
 
+  const selectedSet = useMemo(() => {
+    if (selectedPaths && selectedPaths.length > 0) return new Set(selectedPaths);
+    return selectedPath ? new Set([selectedPath]) : new Set<string>();
+  }, [selectedPaths, selectedPath]);
+
   return (
     <div
       ref={containerRef}
@@ -321,7 +328,7 @@ export const GridView: React.FC<GridViewProps> = ({
     >
       <div className={`grid ${gridStyle} auto-rows-max`}>
         {entries.map((entry) => {
-          const isSelected = selectedPath === entry.path;
+          const isSelected = selectedSet.has(entry.path);
           const isCut = clipboard?.isCut && clipboard?.paths.includes(entry.path);
           const isJustPasted = highlightedPath === entry.path;
           const isDropTarget = dragOverFolderPath === entry.path;
@@ -339,8 +346,11 @@ export const GridView: React.FC<GridViewProps> = ({
               data-file-path={entry.path}
               draggable
               onDragStart={(e) => {
-                e.dataTransfer.setData('application/x-jabro-path', JSON.stringify([entry.path]));
-                e.dataTransfer.setData('text/plain', entry.path);
+                const dragPaths = selectedSet.has(entry.path) && selectedSet.size > 1
+                  ? Array.from(selectedSet)
+                  : [entry.path];
+                e.dataTransfer.setData('application/x-jabro-path', JSON.stringify(dragPaths));
+                e.dataTransfer.setData('text/plain', dragPaths.join('\n'));
                 e.dataTransfer.effectAllowed = 'copyMove';
               }}
               onDragOver={entry.isDirectory ? (e) => {
@@ -354,7 +364,7 @@ export const GridView: React.FC<GridViewProps> = ({
               } : undefined}
               onClick={(e) => {
                 e.stopPropagation();
-                onSelect(entry.path);
+                onSelect(entry.path, e);
               }}
               onDoubleClick={(e) => {
                 e.stopPropagation();
@@ -362,7 +372,6 @@ export const GridView: React.FC<GridViewProps> = ({
               }}
               onContextMenu={(e) => {
                 e.stopPropagation();
-                onSelect(entry.path);
                 onContextMenu(e, entry);
               }}
               className={`

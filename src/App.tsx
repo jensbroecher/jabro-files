@@ -387,6 +387,7 @@ export default function App() {
   const [entries, setEntries] = useState<DirEntry[]>([]);
   const [sizeCache, setSizeCache] = useState<Record<string, SizeResult>>({});
   const [selected, setSelected] = useState<string | null>(null);
+  const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
   const [sortBy, setSortBy] = useState<'name' | 'size' | 'mtime'>('name');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
   const [filter, setFilter] = useState('');
@@ -596,6 +597,9 @@ export default function App() {
 
   const [viewer, setViewer] = useState<null | { type: 'image' | 'audio' | 'video' | 'text' | 'pdf' | '3d' | 'gaussian-splat'; path: string; name: string }>(null);
   const [textContent, setTextContent] = useState<string | null>(null);
+  const [isEditingText, setIsEditingText] = useState(false);
+  const [textDirty, setTextDirty] = useState(false);
+  const [isSavingText, setIsSavingText] = useState(false);
 
   // Drag/drop + drive context + copy feedback
   const [driveCtx, setDriveCtx] = useState<{ x: number; y: number; drive: DriveInfo } | null>(null);
@@ -779,6 +783,7 @@ export default function App() {
   const [rightCurrentPath, setRightCurrentPath] = useState(HOME_DIR);
   const [rightEntries, setRightEntries] = useState<DirEntry[]>([]);
   const [rightSelected, setRightSelected] = useState<string | null>(null);
+  const [rightSelectedPaths, setRightSelectedPaths] = useState<string[]>([]);
   const [rightFilter, setRightFilter] = useState('');
   const [rightSortBy, setRightSortBy] = useState<'name' | 'size' | 'mtime'>('name');
   const [rightSortDir, setRightSortDir] = useState<'asc' | 'desc'>('asc');
@@ -818,6 +823,7 @@ export default function App() {
       setIsLoading(true);
     }
     setSelected(null);
+    setSelectedPaths([]);
     setFilter('');
 
     try {
@@ -1014,6 +1020,8 @@ export default function App() {
 
   // Load text content when text viewer opens
   useEffect(() => {
+    setIsEditingText(false);
+    setTextDirty(false);
     if (viewer?.type === 'text' && api) {
       setTextContent('Loading text preview...');
       (api as any).readTextFile?.(viewer.path)
@@ -1023,6 +1031,46 @@ export default function App() {
       setTextContent(null);
     }
   }, [viewer, api]);
+
+  const saveTextViewer = useCallback(async () => {
+    if (!viewer || viewer.type !== 'text' || textContent == null || !api?.writeTextFile) return;
+    setIsSavingText(true);
+    try {
+      const res = await api.writeTextFile(viewer.path, textContent);
+      if (res?.success) {
+        setTextDirty(false);
+        showToast({
+          type: 'success',
+          title: 'File saved',
+          message: isRemotePath(viewer.path)
+            ? `Uploaded changes to "${viewer.name}" on server`
+            : `Saved changes to "${viewer.name}"`,
+        });
+        const parent = dirName(viewer.path);
+        if (parent) dirCacheRef.current.delete(normalizeDirPath(parent));
+        dirCacheRef.current.delete(currentPath);
+        loadDirectory(currentPath);
+        if (dualPane) {
+          dirCacheRef.current.delete(rightCurrentPath);
+          loadRightDirectory(rightCurrentPath);
+        }
+      } else {
+        showToast({
+          type: 'error',
+          title: 'Save failed',
+          message: res?.error || 'Could not save file.',
+        });
+      }
+    } catch (err: any) {
+      showToast({
+        type: 'error',
+        title: 'Save failed',
+        message: err?.message || String(err),
+      });
+    } finally {
+      setIsSavingText(false);
+    }
+  }, [viewer, textContent, currentPath, rightCurrentPath, dualPane, loadDirectory, loadRightDirectory, showToast]);
 
   // History navigation
   const navigateTo = useCallback((newPath: string) => {
@@ -1346,10 +1394,22 @@ export default function App() {
     }
   }, [entries, calculateFolderSize]);
 
-  // Copy / Cut / Paste support
+  // Copy / Cut / Paste support (multi-select aware)
   const copyToClipboard = useCallback((isCut = false, specificPath?: string) => {
-    const p = specificPath || (activePane === 'right' ? rightSelected : selected);
-    if (!p) {
+    const activeSelList = activePane === 'right' ? rightSelectedPaths : selectedPaths;
+    const activeSingle = activePane === 'right' ? rightSelected : selected;
+    let paths: string[] = [];
+    if (specificPath) {
+      paths = activeSelList.includes(specificPath) && activeSelList.length > 1
+        ? activeSelList
+        : [specificPath];
+    } else if (activeSelList.length > 0) {
+      paths = activeSelList;
+    } else if (activeSingle) {
+      paths = [activeSingle];
+    }
+
+    if (paths.length === 0) {
       showToast({
         type: 'info',
         title: 'No item selected',
@@ -1357,19 +1417,19 @@ export default function App() {
       });
       return;
     }
-    const fileName = baseName(p);
-    setClipboard({ paths: [p], isCut });
+    setClipboard({ paths, isCut });
 
     try {
-      navigator.clipboard.writeText(p);
+      navigator.clipboard.writeText(paths.join('\n'));
     } catch {}
 
+    const label = paths.length === 1 ? `"${baseName(paths[0])}"` : `${paths.length} items`;
     showToast({
       type: 'info',
       title: isCut ? 'Cut to clipboard' : 'Copied to clipboard',
-      message: `"${fileName}" • Ready to paste (${isCut ? 'move' : 'copy'})`
+      message: `${label} • Ready to paste (${isCut ? 'move' : 'copy'})`
     });
-  }, [selected, rightSelected, activePane, showToast]);
+  }, [selected, rightSelected, selectedPaths, rightSelectedPaths, activePane, showToast]);
 
   const pasteFromClipboard = useCallback(async (customTarget?: string) => {
     let pathsToPaste = clipboard?.paths || [];
@@ -1593,11 +1653,19 @@ export default function App() {
 
   // Space Hogs (Find Largest Files)
   const openLargestFinder = useCallback(async () => {
+    const target = activePaneIsRight ? rightCurrentPath : currentPath;
+    if (isRemotePath(target) || target.startsWith('collection:')) {
+      showToast({
+        type: 'info',
+        title: 'Local folders only',
+        message: 'Space Hogs scans local drives and folders.',
+      });
+      return;
+    }
     setShowLargestModal(true);
     setLargestLoading(true);
     setLargestFilter('');
     try {
-      const target = activePaneIsRight ? rightCurrentPath : currentPath;
       if (api?.findLargestFiles) {
         const res = await api.findLargestFiles(target, 50);
         setLargestFiles(res);
@@ -1614,7 +1682,7 @@ export default function App() {
     } finally {
       setLargestLoading(false);
     }
-  }, [activePaneIsRight, rightCurrentPath, currentPath, rightEntries, entries]);
+  }, [activePaneIsRight, rightCurrentPath, currentPath, rightEntries, entries, showToast]);
 
   const filteredLargestFiles = useMemo(() => {
     if (!largestFilter.trim()) return largestFiles;
@@ -1756,7 +1824,10 @@ export default function App() {
       }
 
       if (selected && paths.some(p => pathsEqual(p, selected))) setSelected(null);
+      setSelectedPaths(prev => prev.filter(sp => !paths.some(p => pathsEqual(p, sp))));
       if (rightSelected && paths.some(p => pathsEqual(p, rightSelected))) setRightSelected(null);
+      setRightSelectedPaths(prev => prev.filter(sp => !paths.some(p => pathsEqual(p, sp))));
+      setLargestFiles(prev => prev.filter(lf => !paths.some(p => pathsEqual(p, lf.path))));
       if (clipboard && clipboard.paths.some(cp => paths.some(p => pathsEqual(p, cp)))) {
         setClipboard(null);
       }
@@ -2296,20 +2367,101 @@ export default function App() {
     }
   };
 
-  const handleLeftSelect = useCallback((path: string) => {
-    setSelected(path);
+  const handleLeftSelect = useCallback((path: string, e?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => {
     setActivePane('left');
+    if (!path) {
+      setSelected(null);
+      setSelectedPaths([]);
+      return;
+    }
+    const toggleMod = Boolean(e && (IS_MAC ? e.metaKey : e.ctrlKey));
+    const rangeMod = Boolean(e?.shiftKey);
+
+    if (rangeMod && selected) {
+      const list = entries.filter(x => matchesSearch(x.name, filter)).sort((a, b) => {
+        if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+        const va = sortBy === 'name' ? a.name.toLowerCase() : sortBy === 'size' ? (a.size ?? -1) : a.mtime;
+        const vb = sortBy === 'name' ? b.name.toLowerCase() : sortBy === 'size' ? (b.size ?? -1) : b.mtime;
+        if (va < vb) return sortDir === 'asc' ? -1 : 1;
+        if (va > vb) return sortDir === 'asc' ? 1 : -1;
+        return 0;
+      });
+      const startIdx = list.findIndex(x => x.path === selected);
+      const endIdx = list.findIndex(x => x.path === path);
+      if (startIdx >= 0 && endIdx >= 0) {
+        const [lo, hi] = startIdx < endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
+        const range = list.slice(lo, hi + 1).map(x => x.path);
+        setSelectedPaths(range);
+        return;
+      }
+    }
+
+    if (toggleMod) {
+      setSelectedPaths(prev => {
+        const exists = prev.includes(path);
+        const next = exists ? prev.filter(p => p !== path) : [...prev, path];
+        setSelected(next.length > 0 ? next[next.length - 1] : null);
+        return next;
+      });
+      return;
+    }
+
+    setSelected(path);
+    setSelectedPaths([path]);
     if (dualPane && splitMode === 'linked') {
-      const ent = entries.find(e => e.path === path);
+      const ent = entries.find(item => item.path === path);
       if (ent && ent.isDirectory) {
         loadRightDirectory(ent.path);
       }
     }
-  }, [dualPane, splitMode, entries, loadRightDirectory]);
+  }, [dualPane, splitMode, entries, selected, filter, sortBy, sortDir, loadRightDirectory]);
+
+  const handleRightSelect = useCallback((path: string, e?: { ctrlKey?: boolean; metaKey?: boolean; shiftKey?: boolean }) => {
+    setActivePane('right');
+    if (!path) {
+      setRightSelected(null);
+      setRightSelectedPaths([]);
+      return;
+    }
+    const toggleMod = Boolean(e && (IS_MAC ? e.metaKey : e.ctrlKey));
+    const rangeMod = Boolean(e?.shiftKey);
+
+    if (rangeMod && rightSelected) {
+      const list = rightEntries.filter(x => matchesSearch(x.name, rightFilter)).sort((a, b) => {
+        if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+        const va = rightSortBy === 'name' ? a.name.toLowerCase() : rightSortBy === 'size' ? (a.size ?? -1) : a.mtime;
+        const vb = rightSortBy === 'name' ? b.name.toLowerCase() : rightSortBy === 'size' ? (b.size ?? -1) : b.mtime;
+        if (va < vb) return rightSortDir === 'asc' ? -1 : 1;
+        if (va > vb) return rightSortDir === 'asc' ? 1 : -1;
+        return 0;
+      });
+      const startIdx = list.findIndex(x => x.path === rightSelected);
+      const endIdx = list.findIndex(x => x.path === path);
+      if (startIdx >= 0 && endIdx >= 0) {
+        const [lo, hi] = startIdx < endIdx ? [startIdx, endIdx] : [endIdx, startIdx];
+        const range = list.slice(lo, hi + 1).map(x => x.path);
+        setRightSelectedPaths(range);
+        return;
+      }
+    }
+
+    if (toggleMod) {
+      setRightSelectedPaths(prev => {
+        const exists = prev.includes(path);
+        const next = exists ? prev.filter(p => p !== path) : [...prev, path];
+        setRightSelected(next.length > 0 ? next[next.length - 1] : null);
+        return next;
+      });
+      return;
+    }
+
+    setRightSelected(path);
+    setRightSelectedPaths([path]);
+  }, [rightEntries, rightSelected, rightFilter, rightSortBy, rightSortDir]);
 
   // Row interactions
-  const onRowClick = (entry: DirEntry) => {
-    handleLeftSelect(entry.path);
+  const onRowClick = (entry: DirEntry, e?: React.MouseEvent) => {
+    handleLeftSelect(entry.path, e);
   };
   const onRowDoubleClick = (entry: DirEntry) => openEntry(entry, 'left');
 
@@ -2514,22 +2666,32 @@ export default function App() {
         return;
       }
 
-      // Quick Look navigation & escape
+      // Quick Look navigation, text save & escape
       if (viewer) {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's' && viewer.type === 'text' && isEditingText) {
+          e.preventDefault();
+          saveTextViewer();
+          return;
+        }
         if (e.key === 'Escape') {
           e.preventDefault();
+          if (isEditingText && textDirty) {
+            if (!window.confirm('Discard unsaved changes?')) return;
+          }
           setViewer(null);
           return;
         }
-        if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
-          e.preventDefault();
-          navigateViewer(1);
-          return;
-        }
-        if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
-          e.preventDefault();
-          navigateViewer(-1);
-          return;
+        if (!isInput) {
+          if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+            e.preventDefault();
+            navigateViewer(1);
+            return;
+          }
+          if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            navigateViewer(-1);
+            return;
+          }
         }
       }
 
@@ -2571,13 +2733,30 @@ export default function App() {
         return;
       }
 
+      // Ctrl/Cmd+A to select all visible items in active pane
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && !isInput && !viewer) {
+        e.preventDefault();
+        const list = activePaneIsRight ? rightVisibleEntries : visibleEntries;
+        const allPaths = list.map(x => x.path);
+        if (activePaneIsRight) {
+          setRightSelectedPaths(allPaths);
+          setRightSelected(allPaths[0] || null);
+        } else {
+          setSelectedPaths(allPaths);
+          setSelected(allPaths[0] || null);
+        }
+        return;
+      }
+
       if ((e.key === 'Delete' || (IS_MAC && e.metaKey && e.key === 'Backspace')) && !isInput) {
+        const activeSelList = activePaneIsRight ? rightSelectedPaths : selectedPaths;
         const activeSel = activePaneIsRight ? rightSelected : selected;
         const activeList = activePaneIsRight ? rightEntries : entries;
-        const ent = activeList.find(x => x.path === activeSel);
-        if (ent) {
+        const targetPaths = activeSelList.length > 0 ? activeSelList : (activeSel ? [activeSel] : []);
+        const targetEntries = activeList.filter(x => targetPaths.includes(x.path));
+        if (targetEntries.length > 0) {
           e.preventDefault();
-          requestDelete([ent], e.shiftKey);
+          requestDelete(targetEntries, e.shiftKey);
           return;
         }
       }
@@ -2608,7 +2787,9 @@ export default function App() {
         } else {
           setFilter('');
           setSelected(null);
+          setSelectedPaths([]);
           setRightSelected(null);
+          setRightSelectedPaths([]);
           setIsEditingPath(false);
         }
       }
@@ -2645,9 +2826,9 @@ export default function App() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [
-    activeGoUp, activeRefresh, activeCalculateAllVisibleSizes, selected, entries, 
-    copyToClipboard, pasteFromClipboard, activePaneIsRight, rightSelected, rightEntries, 
-    navigateRight, viewer, activePane, rightVisibleEntries, visibleEntries, navigateViewer, 
+    activeGoUp, activeRefresh, activeCalculateAllVisibleSizes, selected, selectedPaths, entries, 
+    copyToClipboard, pasteFromClipboard, activePaneIsRight, rightSelected, rightSelectedPaths, rightEntries, 
+    navigateRight, viewer, isEditingText, textDirty, saveTextViewer, activePane, rightVisibleEntries, visibleEntries, navigateViewer, 
     addNewTab, openEntry, toggleSidebar, requestDelete, requestRename,
     deleteConfirm, renameModal, remoteModal.isOpen, elevationPrompt, collectionModal.isOpen
   ]);
@@ -2808,8 +2989,14 @@ export default function App() {
     if (act === 'explorer') api.showInExplorer(entry.path);
     if (act === 'calc' && entry.isDirectory) calculateFolderSize(entry.path, true);
     if (act === 'rename') requestRename(entry);
-    if (act === 'delete') requestDelete([entry], false);
-    if (act === 'delete-permanent') requestDelete([entry], true);
+    if (act === 'delete' || act === 'delete-permanent') {
+      const activeSelList = activePaneIsRight ? rightSelectedPaths : selectedPaths;
+      const activeList = activePaneIsRight ? rightEntries : entries;
+      const targets = activeSelList.includes(entry.path) && activeSelList.length > 1
+        ? activeList.filter(x => activeSelList.includes(x.path))
+        : [entry];
+      requestDelete(targets, act === 'delete-permanent');
+    }
     if (act === 'copy') {
       try {
         await navigator.clipboard.writeText(entry.path);
@@ -2852,14 +3039,36 @@ export default function App() {
   }, [ctx, driveCtx, collectionCtx, remoteCtx, showCachePopover]);
 
   const selectedEntry = entries.find(e => e.path === selected);
+  const activeSelectedPaths = activePaneIsRight ? rightSelectedPaths : selectedPaths;
+  const activeSelectedBytes = useMemo(() => {
+    const list = activePaneIsRight ? rightEntries : entries;
+    if (activeSelectedPaths.length === 0) return 0;
+    const set = new Set(activeSelectedPaths);
+    return list.reduce((acc, item) => acc + (set.has(item.path) ? (item.size || sizeCache[item.path]?.size || 0) : 0), 0);
+  }, [activePaneIsRight, rightEntries, entries, activeSelectedPaths, sizeCache]);
 
-  const onRightRowClick = (entry: DirEntry) => {
-    setRightSelected(entry.path);
-    setActivePane('right');
+  const onRightRowClick = (entry: DirEntry, e?: React.MouseEvent) => {
+    handleRightSelect(entry.path, e);
   };
   const onRightRowDoubleClick = (entry: DirEntry) => {
     setActivePane('right');
     openEntry(entry, 'right');
+  };
+
+  const openRowContextMenu = (e: React.MouseEvent, entry: DirEntry, pane: 'left' | 'right') => {
+    setActivePane(pane);
+    if (pane === 'right') {
+      if (!rightSelectedPaths.includes(entry.path)) {
+        setRightSelected(entry.path);
+        setRightSelectedPaths([entry.path]);
+      }
+    } else {
+      if (!selectedPaths.includes(entry.path)) {
+        setSelected(entry.path);
+        setSelectedPaths([entry.path]);
+      }
+    }
+    showCtx(e, entry);
   };
 
   // Empty space handlers for panes: activate pane, allow paste / new folder via context
@@ -2867,10 +3076,12 @@ export default function App() {
     if (e) e.stopPropagation();
     setActivePane('left');
     setSelected(null);
+    setSelectedPaths([]);
   };
   const showLeftPaneCtx = (e: React.MouseEvent) => {
     setActivePane('left');
     setSelected(null);
+    setSelectedPaths([]);
     showContextMenu(e, null);
   };
 
@@ -2878,10 +3089,12 @@ export default function App() {
     if (e) e.stopPropagation();
     setActivePane('right');
     setRightSelected(null);
+    setRightSelectedPaths([]);
   };
   const showRightPaneCtx = (e: React.MouseEvent) => {
     setActivePane('right');
     setRightSelected(null);
+    setRightSelectedPaths([]);
     showContextMenu(e, null);
   };
 
@@ -3807,14 +4020,15 @@ export default function App() {
                 <GridView
                   entries={visibleEntries}
                   selectedPath={selected}
+                  selectedPaths={selectedPaths}
                   sizeCache={sizeCache}
                   clipboard={clipboard}
                   highlightedPath={highlightedPath}
                   dragOverFolderPath={dragOverFolderPath}
                   tileSize={gridTileSize}
-                  onSelect={(p) => handleLeftSelect(p)}
+                  onSelect={(p, e) => handleLeftSelect(p, e)}
                   onOpen={(entry) => openEntry(entry, 'left')}
-                  onContextMenu={(e, entry) => { setActivePane('left'); setSelected(entry.path); showCtx(e, entry); }}
+                  onContextMenu={(e, entry) => openRowContextMenu(e, entry, 'left')}
                   onPaneContextMenu={showLeftPaneCtx}
                   onCalculateFolderSize={calculateFolderSize}
                   onDropToFolder={(e, targetPath) => { handleDropToPath(e, targetPath); setActivePane('left'); }}
@@ -3862,12 +4076,14 @@ export default function App() {
                         return (
                           <tr
                             key={entry.path}
-                            className={`file-row ${selected === entry.path ? 'selected' : ''} ${isCut ? 'is-cut' : ''} ${isDropTarget ? 'drop-target' : ''} ${isJustPasted ? 'just-pasted' : ''}`}
+                            className={`file-row ${selectedPaths.includes(entry.path) || selected === entry.path ? 'selected' : ''} ${isCut ? 'is-cut' : ''} ${isDropTarget ? 'drop-target' : ''} ${isJustPasted ? 'just-pasted' : ''}`}
                             draggable
                             onDragStart={(e) => {
-                              const p = entry.path;
-                              e.dataTransfer.setData('application/x-jabro-path', JSON.stringify([p]));
-                              e.dataTransfer.setData('text/plain', p);
+                              const dragList = selectedPaths.includes(entry.path) && selectedPaths.length > 1
+                                ? selectedPaths
+                                : [entry.path];
+                              e.dataTransfer.setData('application/x-jabro-path', JSON.stringify(dragList));
+                              e.dataTransfer.setData('text/plain', dragList.join('\n'));
                               e.dataTransfer.effectAllowed = 'copyMove';
                             }}
                             onDragOver={entry.isDirectory ? (e) => {
@@ -3879,9 +4095,9 @@ export default function App() {
                               if (dragOverFolderPath === entry.path) setDragOverFolderPath(null);
                             } : undefined}
                             onDrop={entry.isDirectory ? (e) => { handleDropToPath(e, entry.path); setActivePane('left'); } : undefined}
-                            onClick={(e) => { e.stopPropagation(); onRowClick(entry); }}
+                            onClick={(e) => { e.stopPropagation(); onRowClick(entry, e); }}
                             onDoubleClick={() => onRowDoubleClick(entry)}
-                            onContextMenu={(e) => { e.stopPropagation(); setActivePane('left'); setSelected(entry.path); showCtx(e, entry); }}
+                            onContextMenu={(e) => { e.stopPropagation(); openRowContextMenu(e, entry, 'left'); }}
                           >
                             <td>
                               <div className="name-cell">
@@ -4016,14 +4232,15 @@ export default function App() {
                   <GridView
                     entries={rightVisibleEntries}
                     selectedPath={rightSelected}
+                    selectedPaths={rightSelectedPaths}
                     sizeCache={sizeCache}
                     clipboard={clipboard}
                     highlightedPath={highlightedPath}
                     dragOverFolderPath={dragOverFolderPath}
                     tileSize={gridTileSize}
-                    onSelect={(p) => { setRightSelected(p); setActivePane('right'); }}
+                    onSelect={(p, e) => handleRightSelect(p, e)}
                     onOpen={(entry) => openEntry(entry, 'right')}
-                    onContextMenu={(e, entry) => { setActivePane('right'); setRightSelected(entry.path); showCtx(e, entry); }}
+                    onContextMenu={(e, entry) => openRowContextMenu(e, entry, 'right')}
                     onPaneContextMenu={showRightPaneCtx}
                     onCalculateFolderSize={calculateFolderSize}
                     onDropToFolder={(e, targetPath) => { handleDropToPath(e, targetPath); setActivePane('right'); }}
@@ -4071,12 +4288,14 @@ export default function App() {
                           return (
                             <tr
                               key={entry.path}
-                              className={`file-row ${rightSelected === entry.path ? 'selected' : ''} ${isCut ? 'is-cut' : ''} ${isDropTarget ? 'drop-target' : ''} ${isJustPasted ? 'just-pasted' : ''}`}
+                              className={`file-row ${rightSelectedPaths.includes(entry.path) || rightSelected === entry.path ? 'selected' : ''} ${isCut ? 'is-cut' : ''} ${isDropTarget ? 'drop-target' : ''} ${isJustPasted ? 'just-pasted' : ''}`}
                               draggable
                               onDragStart={(e) => {
-                                const p = entry.path;
-                                e.dataTransfer.setData('application/x-jabro-path', JSON.stringify([p]));
-                                e.dataTransfer.setData('text/plain', p);
+                                const dragList = rightSelectedPaths.includes(entry.path) && rightSelectedPaths.length > 1
+                                  ? rightSelectedPaths
+                                  : [entry.path];
+                                e.dataTransfer.setData('application/x-jabro-path', JSON.stringify(dragList));
+                                e.dataTransfer.setData('text/plain', dragList.join('\n'));
                                 e.dataTransfer.effectAllowed = 'copyMove';
                               }}
                               onDragOver={entry.isDirectory ? (e) => {
@@ -4088,9 +4307,9 @@ export default function App() {
                                 if (dragOverFolderPath === entry.path) setDragOverFolderPath(null);
                               } : undefined}
                               onDrop={entry.isDirectory ? (e) => { handleDropToPath(e, entry.path); setActivePane('right'); } : undefined}
-                              onClick={(e) => { e.stopPropagation(); onRightRowClick(entry); }}
+                              onClick={(e) => { e.stopPropagation(); onRightRowClick(entry, e); }}
                               onDoubleClick={() => onRightRowDoubleClick(entry)}
-                              onContextMenu={(e) => { e.stopPropagation(); setActivePane('right'); setRightSelected(entry.path); showCtx(e, entry); }}
+                              onContextMenu={(e) => { e.stopPropagation(); openRowContextMenu(e, entry, 'right'); }}
                             >
                               <td>
                                 <div className="name-cell">
@@ -4141,6 +4360,14 @@ export default function App() {
           <div className="statusbar h-7 px-3 text-xs bg-[#18181b] border-t border-zinc-800 flex items-center gap-x-3 text-zinc-400">
             <div>{entries.length} items • {stats.folderCount} folders, {stats.fileCount} files</div>
             <div>Files in view: <span className="text-zinc-200">{formatSize(stats.filesTotalBytes)}</span></div>
+            {activeSelectedPaths.length > 1 && (
+              <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-blue-500/15 border border-blue-500/30 text-blue-300 text-[11px] font-medium">
+                <span>{activeSelectedPaths.length} selected</span>
+                {activeSelectedBytes > 0 && (
+                  <span className="text-blue-200/80 tabular-nums">({formatSize(activeSelectedBytes)})</span>
+                )}
+              </div>
+            )}
             {bgActivity?.active && (
               <div className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-blue-950/60 border border-blue-500/30 text-blue-300 text-[11px] max-w-[320px]">
                 <Loader2 size={11} className="animate-spin text-blue-400 shrink-0" />
@@ -4349,7 +4576,10 @@ export default function App() {
                             key={c.id}
                             className={`context-menu-item flex items-center justify-between ${alreadyIn ? 'text-zinc-500' : ''}`}
                             onClick={() => {
-                              addPathsToCollection(c.id, [ctx.entry!.path]);
+                              const toAdd = activeSelectedPaths.includes(ctx.entry!.path) && activeSelectedPaths.length > 1
+                                ? activeSelectedPaths.filter(p => !isRemotePath(p))
+                                : [ctx.entry!.path];
+                              addPathsToCollection(c.id, toAdd);
                               closeCtx();
                             }}
                           >
@@ -4365,7 +4595,10 @@ export default function App() {
                       <div
                         className="context-menu-item flex items-center gap-2 text-blue-400 hover:text-blue-300 font-medium"
                         onClick={() => {
-                          setPendingAddPaths([ctx.entry!.path]);
+                          const toAdd = activeSelectedPaths.includes(ctx.entry!.path) && activeSelectedPaths.length > 1
+                            ? activeSelectedPaths.filter(p => !isRemotePath(p))
+                            : [ctx.entry!.path];
+                          setPendingAddPaths(toAdd);
                           setCollectionModal({
                             isOpen: true,
                             mode: 'create',
@@ -4443,7 +4676,11 @@ export default function App() {
               <div className="context-menu-item danger justify-between" onClick={() => ctxAction('delete')}>
                 <span className="flex items-center gap-2">
                   <Trash2 size={14} className="text-rose-400" />
-                  <span>{isRemotePath(ctx.entry.path) ? 'Delete from server' : 'Delete'}</span>
+                  <span>
+                    {activeSelectedPaths.includes(ctx.entry.path) && activeSelectedPaths.length > 1
+                      ? `Delete (${activeSelectedPaths.length} items)`
+                      : (isRemotePath(ctx.entry.path) ? 'Delete from server' : 'Delete')}
+                  </span>
                 </span>
                 <span className="text-[10px] text-rose-400/70 font-mono">{IS_MAC ? '⌘⌫' : 'Del'}</span>
               </div>
@@ -4679,6 +4916,37 @@ export default function App() {
               className="flex items-center gap-2 flex-shrink-0"
               style={{ WebkitAppRegion: 'no-drag' } as any}
             >
+              {viewer.type === 'text' && (
+                <>
+                  <button
+                    onClick={() => setIsEditingText(prev => !prev)}
+                    className={`text-xs px-2.5 py-1 rounded transition cursor-pointer font-medium flex items-center gap-1.5 border ${
+                      isEditingText
+                        ? 'bg-blue-600/20 border-blue-500/50 text-blue-300 hover:bg-blue-600/30'
+                        : 'bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border-zinc-700/60'
+                    }`}
+                    title={isEditingText ? 'Switch back to read-only view' : 'Edit this text/code file directly'}
+                  >
+                    <Edit3 size={13} />
+                    <span>{isEditingText ? 'Viewing' : 'Edit'}</span>
+                  </button>
+                  {isEditingText && (
+                    <button
+                      onClick={saveTextViewer}
+                      disabled={isSavingText || !textDirty}
+                      className={`text-xs px-2.5 py-1 rounded transition cursor-pointer font-medium flex items-center gap-1.5 border ${
+                        textDirty
+                          ? 'bg-blue-600 hover:bg-blue-500 text-white border-blue-500 shadow-sm'
+                          : 'bg-zinc-800 text-zinc-500 border-zinc-700/60 cursor-default'
+                      }`}
+                      title={`Save changes (${MOD_KEY}+S)`}
+                    >
+                      {isSavingText ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+                      <span>{isSavingText ? 'Saving...' : (textDirty ? `Save (${MOD_KEY}+S)` : 'Saved')}</span>
+                    </button>
+                  )}
+                </>
+              )}
               <button
                 onClick={async () => {
                   try {
@@ -4780,10 +5048,59 @@ export default function App() {
               </div>
             )}
             {viewer.type === 'text' && (
-              <div className="w-full h-full flex justify-center p-6 overflow-auto">
-                <pre className="whitespace-pre-wrap font-mono text-xs text-zinc-200 w-full max-w-6xl bg-[#141418] p-6 rounded-xl border border-zinc-800/80 shadow-2xl overflow-auto leading-relaxed h-full">
-                  {textContent || 'Loading...'}
-                </pre>
+              <div className="w-full h-full flex flex-col items-center p-6 overflow-hidden">
+                {isEditingText ? (
+                  <div className="w-full max-w-6xl h-full flex flex-col bg-[#141418] rounded-xl border border-blue-500/40 shadow-2xl overflow-hidden">
+                    <div className="px-4 py-1.5 bg-[#18181d] border-b border-zinc-800 flex items-center justify-between text-[11px] text-zinc-400">
+                      <div className="flex items-center gap-2">
+                        <span className={`w-2 h-2 rounded-full ${textDirty ? 'bg-amber-400' : 'bg-emerald-400'}`} />
+                        <span>{textDirty ? 'Unsaved changes' : 'All changes saved'}</span>
+                        {isRemotePath(viewer.path) && (
+                          <span className="px-1.5 py-0.5 rounded bg-emerald-950/60 text-emerald-300 border border-emerald-700/40 font-mono text-[10px]">
+                            Remote SFTP/FTP
+                          </span>
+                        )}
+                      </div>
+                      <span className="font-mono text-zinc-500">
+                        {(textContent || '').split('\n').length} lines • {(textContent || '').length} chars
+                      </span>
+                    </div>
+                    <textarea
+                      autoFocus
+                      spellCheck={false}
+                      value={textContent ?? ''}
+                      onChange={(e) => {
+                        setTextContent(e.target.value);
+                        setTextDirty(true);
+                      }}
+                      onKeyDown={(e) => {
+                        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+                          e.preventDefault();
+                          saveTextViewer();
+                          return;
+                        }
+                        if (e.key === 'Tab') {
+                          e.preventDefault();
+                          const el = e.currentTarget;
+                          const start = el.selectionStart;
+                          const end = el.selectionEnd;
+                          const val = el.value;
+                          const next = val.slice(0, start) + '  ' + val.slice(end);
+                          setTextContent(next);
+                          setTextDirty(true);
+                          requestAnimationFrame(() => {
+                            el.selectionStart = el.selectionEnd = start + 2;
+                          });
+                        }
+                      }}
+                      className="flex-1 w-full bg-transparent p-6 font-mono text-xs text-zinc-100 outline-none resize-none leading-relaxed select-text"
+                    />
+                  </div>
+                ) : (
+                  <pre className="whitespace-pre-wrap font-mono text-xs text-zinc-200 w-full max-w-6xl bg-[#141418] p-6 rounded-xl border border-zinc-800/80 shadow-2xl overflow-auto leading-relaxed h-full select-text">
+                    {textContent || 'Loading...'}
+                  </pre>
+                )}
               </div>
             )}
             {viewer.type === 'pdf' && (
@@ -5595,6 +5912,150 @@ export default function App() {
                   <span>Save & Connect</span>
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Space Hogs (Top 50 Largest Files) Modal */}
+      {showLargestModal && (
+        <div
+          className="fixed inset-0 bg-black/70 backdrop-blur-xs z-[10000] flex items-center justify-center p-4"
+          onClick={() => setShowLargestModal(false)}
+        >
+          <div
+            className="bg-[#18181b] border border-zinc-700/80 rounded-xl shadow-2xl w-full max-w-3xl max-h-[80vh] flex flex-col overflow-hidden text-zinc-100"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-3.5 border-b border-zinc-800 bg-[#141416]">
+              <div className="flex items-center gap-2.5">
+                <Flame size={18} className="text-amber-400" />
+                <div>
+                  <h3 className="font-semibold text-sm leading-tight">Space Hogs — Largest Files</h3>
+                  <div className="text-[11px] text-zinc-500 font-mono truncate max-w-md">
+                    {activePaneIsRight ? rightCurrentPath : currentPath}
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowLargestModal(false)}
+                className="text-zinc-400 hover:text-white p-1 rounded hover:bg-zinc-800 cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="px-4 py-2.5 border-b border-zinc-800/80 bg-[#121215] flex items-center gap-2">
+              <div className="flex items-center flex-1 bg-zinc-900 border border-zinc-800 rounded-lg px-2.5 py-1">
+                <Search size={13} className="text-zinc-500 mr-2" />
+                <input
+                  type="text"
+                  value={largestFilter}
+                  onChange={(e) => setLargestFilter(e.target.value)}
+                  placeholder="Filter largest files by name or path..."
+                  className="flex-1 bg-transparent text-xs text-zinc-200 outline-none placeholder:text-zinc-600"
+                />
+                {largestFilter && (
+                  <button onClick={() => setLargestFilter('')} className="text-zinc-500 hover:text-zinc-300 cursor-pointer">
+                    <X size={13} />
+                  </button>
+                )}
+              </div>
+              <span className="text-[11px] text-zinc-500 tabular-nums">
+                {filteredLargestFiles.length} {filteredLargestFiles.length === 1 ? 'file' : 'files'}
+              </span>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-3 bg-[#0f0f12] flex flex-col gap-1.5">
+              {largestLoading ? (
+                <div className="py-16 flex flex-col items-center justify-center gap-2 text-zinc-400 text-xs">
+                  <Loader2 size={24} className="animate-spin text-amber-400" />
+                  <span>Scanning folder tree for largest files...</span>
+                </div>
+              ) : filteredLargestFiles.length === 0 ? (
+                <div className="py-16 flex flex-col items-center justify-center gap-2 text-zinc-500 text-xs">
+                  <Flame size={28} className="text-zinc-700" />
+                  <span>No matching files found</span>
+                </div>
+              ) : (
+                (() => {
+                  const maxBytes = filteredLargestFiles[0]?.size || 1;
+                  return filteredLargestFiles.map((file, idx) => {
+                    const pct = Math.max(2, Math.round((file.size / maxBytes) * 100));
+                    return (
+                      <div
+                        key={file.path}
+                        className="group relative rounded-lg border border-zinc-800/80 bg-[#151519] hover:border-zinc-700 p-2.5 flex items-center gap-3 overflow-hidden transition"
+                      >
+                        <div
+                          className="absolute inset-y-0 left-0 bg-amber-500/8 pointer-events-none"
+                          style={{ width: `${pct}%` }}
+                        />
+                        <span className="text-[10px] font-mono text-zinc-500 w-5 text-right flex-shrink-0 z-10">
+                          #{idx + 1}
+                        </span>
+                        <div
+                          className="flex-1 min-w-0 cursor-pointer z-10"
+                          onClick={() => {
+                            const parent = dirName(file.path);
+                            setShowLargestModal(false);
+                            if (parent) {
+                              activeNavigate(parent);
+                              setHighlightedPath(file.path);
+                              if (activePaneIsRight) {
+                                setRightSelected(file.path);
+                                setRightSelectedPaths([file.path]);
+                              } else {
+                                setSelected(file.path);
+                                setSelectedPaths([file.path]);
+                              }
+                              setTimeout(() => setHighlightedPath(null), 2500);
+                            }
+                          }}
+                          title={`Click to open folder containing ${file.name}`}
+                        >
+                          <div className="text-xs font-medium text-zinc-100 truncate group-hover:text-blue-300 transition">
+                            {file.name}
+                          </div>
+                          <div className="text-[10px] text-zinc-500 font-mono truncate">
+                            {file.path}
+                          </div>
+                        </div>
+                        <div className="text-xs font-semibold tabular-nums text-amber-300 flex-shrink-0 z-10">
+                          {formatSize(file.size)}
+                        </div>
+                        <div className="flex items-center gap-1 flex-shrink-0 z-10">
+                          <button
+                            onClick={() => api.showInExplorer(file.path)}
+                            className="p-1.5 rounded bg-zinc-800/80 hover:bg-zinc-700 text-zinc-400 hover:text-white transition cursor-pointer"
+                            title={IS_MAC ? 'Reveal in Finder' : `Show in ${FILE_MANAGER_NAME}`}
+                          >
+                            <ExternalLink size={12} />
+                          </button>
+                          <button
+                            onClick={() => {
+                              requestDelete([
+                                {
+                                  name: file.name,
+                                  path: file.path,
+                                  isDirectory: false,
+                                  size: file.size,
+                                  mtime: file.mtime,
+                                  ext: file.ext,
+                                },
+                              ]);
+                            }}
+                            className="p-1.5 rounded bg-rose-950/50 hover:bg-rose-900/70 text-rose-400 hover:text-rose-200 border border-rose-800/40 transition cursor-pointer"
+                            title="Delete file"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  });
+                })()
+              )}
             </div>
           </div>
         </div>

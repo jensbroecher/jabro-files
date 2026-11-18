@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { Writable } from 'node:stream';
+import { Readable, Writable } from 'node:stream';
 import { Client as FtpClient, FileType } from 'basic-ftp';
 import SftpClient from 'ssh2-sftp-client';
 
@@ -849,6 +849,24 @@ export async function readRemoteTextFile(uri: string, maxBytes = 1024 * 1024): P
       }
     }
 
+    throw new Error('Remote session unavailable.');
+  });
+}
+
+export async function writeRemoteTextFile(uri: string, content: string): Promise<void> {
+  const parsed = parseRemoteUri(uri);
+  if (!parsed) throw new Error(`Invalid remote URI: ${uri}`);
+  const buf = Buffer.from(content, 'utf8');
+
+  await runSerialized(parsed.connectionId, async (session) => {
+    if (session.sftp) {
+      await session.sftp.put(buf, parsed.remotePath);
+      return;
+    }
+    if (session.ftp) {
+      await session.ftp.uploadFrom(Readable.from([buf]), parsed.remotePath);
+      return;
+    }
     throw new Error('Remote session unavailable.');
   });
 }

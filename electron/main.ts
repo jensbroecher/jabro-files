@@ -1881,6 +1881,19 @@ ipcMain.handle('read-text-file', async (_e, filePath: string): Promise<string> =
   }
 });
 
+ipcMain.handle('write-text-file', async (_e, { filePath, content }: { filePath: string; content: string }): Promise<{ success: boolean; error?: string }> => {
+  try {
+    if (remote.isRemoteUri(filePath)) {
+      await remote.writeRemoteTextFile(filePath, content);
+      return { success: true };
+    }
+    await fs.writeFile(filePath, content, 'utf8');
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err?.message || String(err) };
+  }
+});
+
 ipcMain.handle('read-binary-file', async (_e, filePath: string): Promise<Buffer | null> => {
   try {
     return await fs.readFile(filePath);
