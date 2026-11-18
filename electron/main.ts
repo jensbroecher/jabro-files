@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, shell, protocol, net, session, nativeImage, screen } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, shell, protocol, net, session, nativeImage, screen } from 'electron';
 import path from 'node:path';
 import fs from 'node:fs/promises';
 import * as fsSync from 'node:fs';
@@ -15,6 +15,8 @@ const execFileAsync = promisify(execFile);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+app.setName('JabroFiles');
 
 // Enable SharedArrayBuffer feature for WebAssembly workers and allow local file access
 app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
@@ -54,6 +56,96 @@ function getIndexHtmlPath(): string {
     return path.join(process.resourcesPath, 'app.asar', 'dist', 'index.html');
   }
   return path.join(__dirname, '../dist/index.html');
+}
+
+function getAppIconPath(): string {
+  if (app.isPackaged) {
+    return path.join(process.resourcesPath, 'app.asar', 'dist', 'app-icon.png');
+  }
+  return path.join(__dirname, '../public/app-icon.png');
+}
+
+function sendMenuAction(action: string) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('menu-action', action);
+  }
+}
+
+function buildAppMenu(): Menu {
+  const isMac = process.platform === 'darwin';
+  const template: Electron.MenuItemConstructorOptions[] = [
+    ...(isMac
+      ? [
+          {
+            label: 'JabroFiles',
+            submenu: [
+              { role: 'about' as const, label: 'About JabroFiles' },
+              { type: 'separator' as const },
+              { role: 'services' as const },
+              { type: 'separator' as const },
+              { role: 'hide' as const, label: 'Hide JabroFiles' },
+              { role: 'hideOthers' as const },
+              { role: 'unhide' as const },
+              { type: 'separator' as const },
+              { role: 'quit' as const, label: 'Quit JabroFiles' },
+            ],
+          },
+        ]
+      : []),
+    {
+      label: 'File',
+      submenu: [
+        { label: 'New Tab', accelerator: 'CmdOrCtrl+T', click: () => sendMenuAction('new-tab') },
+        { label: 'Open Folder…', accelerator: 'CmdOrCtrl+O', click: () => sendMenuAction('open-folder') },
+        { label: 'New Folder', accelerator: 'CmdOrCtrl+Shift+N', click: () => sendMenuAction('new-folder') },
+        { type: 'separator' },
+        { label: 'Connect FTP / SFTP Server…', accelerator: 'CmdOrCtrl+K', click: () => sendMenuAction('connect-remote') },
+        { type: 'separator' },
+        { label: 'Close Tab', accelerator: 'CmdOrCtrl+W', click: () => sendMenuAction('close-tab') },
+        isMac ? { role: 'close', label: 'Close Window' } : { role: 'quit', label: 'Exit JabroFiles' },
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { label: 'Refresh', accelerator: 'F5', click: () => sendMenuAction('refresh') },
+        { label: 'Calculate Folder Sizes', accelerator: 'CmdOrCtrl+R', click: () => sendMenuAction('calc-sizes') },
+        { type: 'separator' },
+        { label: 'Toggle Sidebar', accelerator: 'CmdOrCtrl+B', click: () => sendMenuAction('toggle-sidebar') },
+        { label: 'Toggle Split View', accelerator: 'CmdOrCtrl+\\', click: () => sendMenuAction('toggle-split') },
+        { type: 'separator' },
+        { role: 'reload', label: 'Reload App Window', accelerator: 'CmdOrCtrl+Shift+R' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
+    {
+      label: 'Window',
+      submenu: [
+        { role: 'minimize' },
+        { role: 'zoom' },
+        ...(isMac ? [{ type: 'separator' as const }, { role: 'front' as const }] : [{ role: 'close' as const }]),
+      ],
+    },
+  ];
+  return Menu.buildFromTemplate(template);
 }
 
 let mainWindow: BrowserWindow | null = null;
@@ -107,6 +199,7 @@ function saveBounds(win: BrowserWindow) {
 
 function createWindow() {
   const savedBounds = getSavedBounds();
+  const iconPath = getAppIconPath();
   const windowOpts: Electron.BrowserWindowConstructorOptions = {
     width: 1180,
     height: 780,
@@ -114,6 +207,7 @@ function createWindow() {
     minHeight: 520,
     backgroundColor: '#0f0f10',
     title: 'JabroFiles',
+    ...(fsSync.existsSync(iconPath) ? { icon: iconPath } : {}),
     titleBarStyle: 'hidden',
     // Windows/Linux draw min/max/close as an overlay on the right; macOS keeps its native
     // traffic lights, vertically centered in the 40px custom title bar.
@@ -365,6 +459,27 @@ app.whenReady().then(() => {
       return '3d';
     }
   });
+
+  const iconPath = getAppIconPath();
+  if (fsSync.existsSync(iconPath)) {
+    const appIcon = nativeImage.createFromPath(iconPath);
+    if (!appIcon.isEmpty() && process.platform === 'darwin' && app.dock) {
+      app.dock.setIcon(appIcon);
+    }
+    app.setAboutPanelOptions({
+      applicationName: 'JabroFiles',
+      applicationVersion: app.getVersion(),
+      copyright: 'JabroFiles',
+      iconPath,
+    });
+  } else {
+    app.setAboutPanelOptions({
+      applicationName: 'JabroFiles',
+      applicationVersion: app.getVersion(),
+      copyright: 'JabroFiles',
+    });
+  }
+  Menu.setApplicationMenu(buildAppMenu());
 
   createWindow();
 

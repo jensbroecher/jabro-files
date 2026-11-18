@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <linearGradient id="bgGrad" x1="64" y1="32" x2="448" y2="480" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#0f172a"/>
+    </linearGradient>
+    <linearGradient id="folderBack" x1="96" y1="112" x2="416" y2="384" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#2563eb"/>
+      <stop offset="100%" stop-color="#1d4ed8"/>
+    </linearGradient>
+    <linearGradient id="folderFront" x1="88" y1="176" x2="424" y2="412" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#60a5fa"/>
+      <stop offset="50%" stop-color="#3b82f6"/>
+      <stop offset="100%" stop-color="#2563eb"/>
+    </linearGradient>
+    <linearGradient id="shine" x1="256" y1="172" x2="256" y2="300" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#ffffff" stop-opacity="0.28"/>
+      <stop offset="100%" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="shadow" x="48" y="88" width="416" height="360" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="14" stdDeviation="16" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <!-- App Icon Squircle Backdrop -->
+  <rect x="24" y="24" width="464" height="464" rx="108" fill="url(#bgGrad)" stroke="#334155" stroke-width="6"/>
+
+  <!-- Folder Group -->
+  <g filter="url(#shadow)">
+    <!-- Folder Back Tab -->
+    <path d="M84 142C84 122.118 100.118 106 120 106H198.6C209.3 106 219.4 110.7 226.2 118.9L244 140H392C411.882 140 428 156.118 428 176V366C428 385.882 411.882 402 392 402H120C100.118 402 84 385.882 84 366V142Z" fill="url(#folderBack)"/>
+
+    <!-- Inner Paper Sheet -->
+    <rect x="112" y="156" width="288" height="44" rx="10" fill="#dbeafe" opacity="0.92"/>
+
+    <!-- Folder Front Body -->
+    <rect x="84" y="174" width="344" height="228" rx="34" fill="url(#folderFront)"/>
+    <rect x="84" y="174" width="344" height="228" rx="34" fill="url(#shine)"/>
+
+    <!-- Subtle Folder Size Bars (JabroFiles signature) -->
+    <rect x="128" y="248" width="256" height="18" rx="9" fill="#0f172a" fill-opacity="0.28"/>
+    <rect x="128" y="248" width="188" height="18" rx="9" fill="#eff6ff" fill-opacity="0.92"/>
+
+    <rect x="128" y="286" width="256" height="18" rx="9" fill="#0f172a" fill-opacity="0.28"/>
+    <rect x="128" y="286" width="128" height="18" rx="9" fill="#bae6fd" fill-opacity="0.9"/>
+
+    <rect x="128" y="324" width="256" height="18" rx="9" fill="#0f172a" fill-opacity="0.28"/>
+    <rect x="128" y="324" width="76" height="18" rx="9" fill="#93c5fd" fill-opacity="0.88"/>
+  </g>
+</svg>

@@ -44,7 +44,7 @@
   "build": {
     "appId": "com.jabrofiles.app",
     "productName": "JabroFiles",
-    "icon": "build/icon.png",
+    "icon": "public/app-icon.png",
     "directories": {
       "output": "release"
     },
@@ -53,7 +53,7 @@
       "dist-electron/**/*"
     ],
     "win": {
-      "icon": "build/icon.png",
+      "icon": "public/app-icon.png",
       "target": [
         {
           "target": "nsis",
@@ -70,6 +70,7 @@
       ]
     },
     "mac": {
+      "icon": "public/app-icon.png",
       "category": "public.app-category.utilities",
       "target": [
         {

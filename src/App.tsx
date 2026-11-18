@@ -2409,9 +2409,91 @@ export default function App() {
     return { folderCount, fileCount, filesTotalBytes };
   }, [entries]);
 
+  const createNewFolderInActivePane = useCallback(async () => {
+    const targetDir = activePaneIsRight ? rightCurrentPath : currentPath;
+    if (!targetDir || targetDir.startsWith('collection:')) return;
+    try {
+      const res = await api.createFolder(targetDir);
+      if (res && typeof res === 'object' && res.requiresElevation) {
+        setElevationPrompt({
+          sources: [],
+          target: targetDir,
+          isMove: false,
+          action: 'createFolder',
+        });
+        return;
+      }
+      dirCacheRef.current.delete(targetDir);
+      if (activePaneIsRight) {
+        loadRightDirectory(targetDir);
+      } else {
+        loadDirectory(targetDir);
+      }
+    } catch (e: any) {
+      console.error('Failed to create folder', e);
+      const errMsg = e?.message || String(e);
+      if (errMsg.includes('Permission denied') || errMsg.includes('administrator') || errMsg.includes('EPERM')) {
+        setElevationPrompt({
+          sources: [],
+          target: targetDir,
+          isMove: false,
+          action: 'createFolder',
+        });
+      }
+    }
+  }, [activePaneIsRight, rightCurrentPath, currentPath, loadRightDirectory, loadDirectory]);
+
+  const toggleSplitPane = useCallback(() => {
+    const next = !dualPane;
+    setDualPane(next);
+    if (next) {
+      if (splitMode === 'linked') {
+        const selectedDir = entries.find(e => e.path === selected && e.isDirectory);
+        if (selectedDir) {
+          loadRightDirectory(selectedDir.path);
+        } else if (rightEntries.length === 0) {
+          const firstDir = entries.find(e => e.isDirectory);
+          if (firstDir) {
+            setSelected(firstDir.path);
+            loadRightDirectory(firstDir.path);
+          } else {
+            loadRightDirectory(rightCurrentPath || currentPath);
+          }
+        }
+      } else if (rightEntries.length === 0) {
+        loadRightDirectory(rightCurrentPath || currentPath);
+      }
+    }
+    setActivePane(next ? 'right' : 'left');
+  }, [dualPane, splitMode, entries, selected, rightEntries.length, rightCurrentPath, currentPath, loadRightDirectory]);
+
+  const lastMenuActionTimeRef = useRef(0);
+
+  // Listen for native application menu actions (File / View)
+  useEffect(() => {
+    if (!api?.onMenuAction) return;
+    return api.onMenuAction((action: string) => {
+      lastMenuActionTimeRef.current = Date.now();
+      if (action === 'new-tab') addNewTab();
+      else if (action === 'close-tab') closeTab(activeTabId);
+      else if (action === 'open-folder') pickFolder();
+      else if (action === 'new-folder') createNewFolderInActivePane();
+      else if (action === 'connect-remote') openRemoteModalForCreate();
+      else if (action === 'refresh') activeRefresh();
+      else if (action === 'calc-sizes') activeCalculateAllVisibleSizes();
+      else if (action === 'toggle-sidebar') toggleSidebar();
+      else if (action === 'toggle-split') toggleSplitPane();
+    });
+  }, [
+    addNewTab, closeTab, activeTabId, pickFolder, createNewFolderInActivePane,
+    openRemoteModalForCreate, activeRefresh, activeCalculateAllVisibleSizes,
+    toggleSidebar, toggleSplitPane
+  ]);
+
   // Keyboard shortcuts — respect active pane for nav / refresh / calc / spacebar Quick Look / delete / rename
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (Date.now() - lastMenuActionTimeRef.current < 120) return;
       const isInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName || '');
       const hasBlockingModal = Boolean(deleteConfirm || renameModal || remoteModal.isOpen || elevationPrompt || collectionModal.isOpen);
       if (hasBlockingModal) return;
@@ -2645,35 +2727,7 @@ export default function App() {
     }
 
     if (act === 'new-folder') {
-      const targetDir = activePaneIsRight ? rightCurrentPath : currentPath;
-      try {
-        const res = await api.createFolder(targetDir);
-        if (res && typeof res === 'object' && res.requiresElevation) {
-          setElevationPrompt({
-            sources: [],
-            target: targetDir,
-            isMove: false,
-            action: 'createFolder',
-          });
-          return;
-        }
-        if (activePaneIsRight) {
-          loadRightDirectory(targetDir);
-        } else {
-          loadDirectory(targetDir);
-        }
-      } catch (e: any) {
-        console.error('Failed to create folder', e);
-        const errMsg = e?.message || String(e);
-        if (errMsg.includes('Permission denied') || errMsg.includes('administrator') || errMsg.includes('EPERM')) {
-          setElevationPrompt({
-            sources: [],
-            target: targetDir,
-            isMove: false,
-            action: 'createFolder',
-          });
-        }
-      }
+      await createNewFolderInActivePane();
       return;
     }
 
@@ -2884,31 +2938,7 @@ export default function App() {
         </button>
 
         <button 
-          onClick={() => {
-            const next = !dualPane;
-            setDualPane(next);
-            if (next) {
-              if (splitMode === 'linked') {
-                const selectedDir = entries.find(e => e.path === selected && e.isDirectory);
-                if (selectedDir) {
-                  loadRightDirectory(selectedDir.path);
-                } else if (rightEntries.length === 0) {
-                  const firstDir = entries.find(e => e.isDirectory);
-                  if (firstDir) {
-                    setSelected(firstDir.path);
-                    loadRightDirectory(firstDir.path);
-                  } else {
-                    loadRightDirectory(rightCurrentPath || currentPath);
-                  }
-                }
-              } else {
-                if (rightEntries.length === 0) {
-                  loadRightDirectory(rightCurrentPath || currentPath);
-                }
-              }
-            }
-            setActivePane(next ? 'right' : 'left');
-          }} 
+          onClick={toggleSplitPane} 
           className={`nav-button flex items-center gap-1.5 ${dualPane ? 'bg-zinc-800 text-blue-300 ring-1 ring-blue-500/50' : 'text-zinc-400'}`} 
           style={{ WebkitAppRegion: 'no-drag', width: 'auto', minWidth: '68px', padding: '0 8px' } as any}
           title={dualPane ? "Close split pane" : "Toggle dual pane (split view)"}

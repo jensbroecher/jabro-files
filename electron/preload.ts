@@ -200,6 +200,15 @@ const api = {
     };
   },
 
+  // Listen for native application menu actions
+  onMenuAction: (callback: (action: string) => void): (() => void) => {
+    const handler = (_event: any, action: string) => callback(action);
+    ipcRenderer.on('menu-action', handler);
+    return () => {
+      ipcRenderer.removeListener('menu-action', handler);
+    };
+  },
+
   readTextFile: (filePath: string): Promise<string> =>
     ipcRenderer.invoke('read-text-file', filePath),
 
