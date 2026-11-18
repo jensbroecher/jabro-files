@@ -1,15 +1,901 @@
-import { BrowserWindow as e, app as t, dialog as n, ipcMain as r, nativeImage as i, protocol as a, screen as o, session as s, shell as c } from "electron";
-import l from "node:path";
-import u from "node:fs/promises";
-import * as d from "node:fs";
-import { Readable as f } from "node:stream";
-import p from "node:os";
-import m from "node:crypto";
-import { exec as h, execFile as g, spawn as _ } from "node:child_process";
-import { promisify as v } from "node:util";
-import { fileURLToPath as y } from "node:url";
+import { BrowserWindow as e, app as t, dialog as n, ipcMain as r, nativeImage as i, protocol as a, safeStorage as o, screen as s, session as c, shell as l } from "electron";
+import u from "node:path";
+import d from "node:fs/promises";
+import * as f from "node:fs";
+import { Readable as p, Writable as m } from "node:stream";
+import h from "node:os";
+import g from "node:crypto";
+import { exec as ee, execFile as te, spawn as _ } from "node:child_process";
+import { promisify as ne } from "node:util";
+import { fileURLToPath as re } from "node:url";
+import { Client as ie, FileType as v } from "basic-ftp";
+import ae from "ssh2-sftp-client";
+//#region electron/remote.ts
+var oe = /^(sftp|ftps?):\/\/([^/]+)(\/.*)?$/i;
+function y(e) {
+	return typeof e == "string" && oe.test(e.trim());
+}
+function b(e) {
+	let t = (e || "/").split("/").filter(Boolean), n = [];
+	for (let e of t) e !== "." && (e === ".." ? n.pop() : n.push(e));
+	return "/" + n.join("/");
+}
+function x(e) {
+	if (!e || typeof e != "string") return null;
+	let t = oe.exec(e.trim());
+	return t ? {
+		protocol: t[1].toLowerCase(),
+		connectionId: t[2],
+		remotePath: b(t[3] || "/")
+	} : null;
+}
+function S(e, t, n) {
+	return `${e}://${t}${b(n)}`;
+}
+function C(e, t) {
+	let n = b(e);
+	return n === "/" ? `/${t}` : `${n}/${t}`;
+}
+function w(e) {
+	let t = b(e);
+	if (t === "/") return "/";
+	let n = t.lastIndexOf("/");
+	return n <= 0 ? "/" : t.slice(0, n);
+}
+function T(e) {
+	let t = b(e);
+	if (t === "/") return "/";
+	let n = t.lastIndexOf("/");
+	return n >= 0 ? t.slice(n + 1) : t;
+}
+function se() {
+	return u.join(t.getPath("userData"), "remote-connections.json");
+}
+function ce() {
+	return u.join(h.tmpdir(), "jabro-remote-preview");
+}
+function le(e) {
+	if (e) {
+		try {
+			if (o.isEncryptionAvailable()) return {
+				method: "safeStorage",
+				value: o.encryptString(e).toString("base64")
+			};
+		} catch (e) {
+			console.warn("[Remote] safeStorage encrypt failed, using fallback encoding:", e);
+		}
+		return {
+			method: "plain",
+			value: Buffer.from(e, "utf8").toString("base64")
+		};
+	}
+}
+function ue(e) {
+	if (!(!e || !e.value)) try {
+		return e.method === "safeStorage" ? o.isEncryptionAvailable() ? o.decryptString(Buffer.from(e.value, "base64")) : void 0 : Buffer.from(e.value, "base64").toString("utf8");
+	} catch (e) {
+		console.warn("[Remote] decryptSecret failed:", e);
+		return;
+	}
+}
+var E = /* @__PURE__ */ new Map(), D = /* @__PURE__ */ new Map(), O = null;
+async function k() {
+	if (O) return O;
+	let e = se();
+	try {
+		let t = await d.readFile(e, "utf8"), n = JSON.parse(t);
+		O = Array.isArray(n) ? n : [];
+	} catch {
+		O = [];
+	}
+	return O;
+}
+async function de(e) {
+	O = e;
+	let t = se();
+	await d.mkdir(u.dirname(t), { recursive: !0 }), await d.writeFile(t, JSON.stringify(e, null, 2), "utf8");
+}
+function fe(e) {
+	return {
+		id: e.id,
+		name: e.name,
+		protocol: e.protocol,
+		host: e.host,
+		port: e.port,
+		username: e.username,
+		authType: e.authType,
+		privateKeyPath: e.privateKeyPath,
+		initialPath: e.initialPath,
+		rejectUnauthorized: e.rejectUnauthorized,
+		hasPassword: !!e.password?.value,
+		hasPassphrase: !!e.passphrase?.value,
+		connected: E.has(e.id),
+		lastError: D.get(e.id),
+		createdAt: e.createdAt
+	};
+}
+async function pe() {
+	return (await k()).map(fe);
+}
+async function me(e) {
+	let t = await k(), n = e.id ? t.find((t) => t.id === e.id) : void 0, r = n?.id || e.id || `srv-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, i = e.protocol || "sftp", a = i === "sftp" ? 22 : 21, o = Number(e.port) > 0 ? Number(e.port) : a, s = e.password ? le(e.password) : e.keepExistingSecrets && n ? n.password : void 0, c = e.passphrase ? le(e.passphrase) : e.keepExistingSecrets && n ? n.passphrase : void 0, l = {
+		id: r,
+		name: (e.name || e.host || "Remote Server").trim(),
+		protocol: i,
+		host: (e.host || "").trim(),
+		port: o,
+		username: (e.username || "").trim(),
+		authType: i === "sftp" && e.authType || "password",
+		password: s,
+		privateKeyPath: e.privateKeyPath?.trim() || void 0,
+		passphrase: c,
+		initialPath: e.initialPath?.trim() || "/",
+		rejectUnauthorized: !!e.rejectUnauthorized,
+		createdAt: n?.createdAt || (/* @__PURE__ */ new Date()).toISOString()
+	};
+	return n && await N(r), D.delete(r), await de(n ? t.map((e) => e.id === r ? l : e) : [...t, l]), fe(l);
+}
+async function he(e) {
+	return await N(e), D.delete(e), await de((await k()).filter((t) => t.id !== e)), !0;
+}
+async function A(e) {
+	let t = await k(), n = e.id ? t.find((t) => t.id === e.id) : void 0, r = e.password || (e.keepExistingSecrets && n ? ue(n.password) : void 0), i = e.passphrase || (e.keepExistingSecrets && n ? ue(n.passphrase) : void 0), a = e.protocol || "sftp";
+	return {
+		protocol: a,
+		host: (e.host || "").trim(),
+		port: Number(e.port) > 0 ? Number(e.port) : a === "sftp" ? 22 : 21,
+		username: (e.username || "").trim(),
+		authType: a === "sftp" && e.authType || "password",
+		password: r,
+		privateKeyPath: e.privateKeyPath?.trim() || n?.privateKeyPath,
+		passphrase: i,
+		initialPath: e.initialPath?.trim() || "/",
+		rejectUnauthorized: !!e.rejectUnauthorized
+	};
+}
+async function j(e) {
+	if (!e.host) throw Error("Host is required.");
+	if (e.protocol === "sftp") {
+		let t = new ae(), n = {
+			host: e.host,
+			port: e.port,
+			username: e.username || void 0,
+			readyTimeout: 15e3,
+			retries: 1
+		};
+		if (e.authType === "privateKey") {
+			if (!e.privateKeyPath) throw Error("Private key file path is required for key authentication.");
+			n.privateKey = await d.readFile(e.privateKeyPath), e.passphrase && (n.passphrase = e.passphrase);
+		} else e.authType === "agent" ? (n.agent = process.env.SSH_AUTH_SOCK, !n.agent && process.platform === "win32" && (n.agent = "pageant")) : n.password = e.password || "";
+		await t.connect(n);
+		let r = b(e.initialPath || "/");
+		try {
+			!e.initialPath || e.initialPath === "." || e.initialPath === "~" ? r = b(await t.cwd()) : await t.exists(r) || (r = b(await t.cwd()));
+		} catch {
+			r = "/";
+		}
+		return {
+			sftp: t,
+			resolvedInitialPath: r
+		};
+	}
+	let t = new ie(2e4);
+	await t.access({
+		host: e.host,
+		port: e.port,
+		user: e.username || "anonymous",
+		password: e.password || "anonymous@",
+		secure: e.protocol === "ftps",
+		secureOptions: e.protocol === "ftps" ? { rejectUnauthorized: e.rejectUnauthorized } : void 0
+	});
+	let n = b(e.initialPath || "/");
+	try {
+		!e.initialPath || e.initialPath === "." || await t.cd(n), n = b(await t.pwd());
+	} catch {
+		try {
+			n = b(await t.pwd());
+		} catch {
+			n = "/";
+		}
+	}
+	return {
+		ftp: t,
+		resolvedInitialPath: n
+	};
+}
+async function ge(e) {
+	let t = await A(e), n = null;
+	try {
+		return n = await j(t), {
+			success: !0,
+			resolvedPath: n.resolvedInitialPath
+		};
+	} catch (e) {
+		return {
+			success: !1,
+			error: e?.message || String(e)
+		};
+	} finally {
+		try {
+			await n?.sftp?.end();
+		} catch {}
+		try {
+			n?.ftp?.close();
+		} catch {}
+	}
+}
+async function _e(e) {
+	let t = (await k()).find((t) => t.id === e);
+	if (!t) throw Error(`Remote server "${e}" was not found.`);
+	return t;
+}
+async function ve(e) {
+	let t = await j(await A({
+		id: e.id,
+		name: e.name,
+		protocol: e.protocol,
+		host: e.host,
+		port: e.port,
+		username: e.username,
+		authType: e.authType,
+		privateKeyPath: e.privateKeyPath,
+		initialPath: e.initialPath,
+		rejectUnauthorized: e.rejectUnauthorized,
+		keepExistingSecrets: !0
+	})), n = {
+		connectionId: e.id,
+		protocol: e.protocol,
+		sftp: t.sftp,
+		ftp: t.ftp,
+		queue: Promise.resolve()
+	};
+	return E.set(e.id, n), D.delete(e.id), n;
+}
+async function ye(e) {
+	let t = E.get(e);
+	if (t) {
+		if (t.protocol === "sftp" && t.sftp || (t.protocol === "ftp" || t.protocol === "ftps") && t.ftp && !t.ftp.closed) return t;
+		E.delete(e);
+	}
+	let n = await _e(e);
+	try {
+		return await ve(n);
+	} catch (t) {
+		throw D.set(e, t?.message || String(t)), t;
+	}
+}
+async function M(e, t) {
+	let n = await ye(e), r = async () => {
+		try {
+			return await t(n);
+		} catch (r) {
+			let i = String(r?.message || r || "");
+			if (!(n.ftp && n.ftp.closed || /No SFTP connection|Not connected|ECONNRESET|EPIPE|ETIMEDOUT|Connection lost|closed|socket/i.test(i))) throw r;
+			return await N(e), n = await ye(e), await t(n);
+		}
+	}, i = n.queue.then(r, r);
+	return n.queue = i.catch(() => {}), i;
+}
+async function be(e) {
+	try {
+		let t = await _e(e);
+		await N(e);
+		let n = await j(await A({
+			id: t.id,
+			name: t.name,
+			protocol: t.protocol,
+			host: t.host,
+			port: t.port,
+			username: t.username,
+			authType: t.authType,
+			privateKeyPath: t.privateKeyPath,
+			initialPath: t.initialPath,
+			rejectUnauthorized: t.rejectUnauthorized,
+			keepExistingSecrets: !0
+		})), r = {
+			connectionId: t.id,
+			protocol: t.protocol,
+			sftp: n.sftp,
+			ftp: n.ftp,
+			queue: Promise.resolve()
+		};
+		return E.set(t.id, r), D.delete(t.id), {
+			success: !0,
+			rootUri: S(t.protocol, t.id, "/"),
+			initialUri: S(t.protocol, t.id, n.resolvedInitialPath)
+		};
+	} catch (t) {
+		let n = t?.message || String(t);
+		return D.set(e, n), {
+			success: !1,
+			error: n
+		};
+	}
+}
+async function N(e) {
+	let t = E.get(e);
+	if (t) {
+		E.delete(e);
+		try {
+			await t.sftp?.end();
+		} catch {}
+		try {
+			t.ftp?.close();
+		} catch {}
+	}
+}
+async function xe() {
+	let e = Array.from(E.keys());
+	await Promise.all(e.map((e) => N(e)));
+}
+function Se(e) {
+	if (e) return `${e.user || "---"}${e.group || "---"}${e.other || "---"}`;
+}
+async function Ce(e) {
+	let t = x(e);
+	if (!t) throw Error(`Invalid remote URI: ${e}`);
+	return M(t.connectionId, async (e) => {
+		let n = [];
+		if (e.sftp) {
+			let r = await e.sftp.list(t.remotePath);
+			for (let i of r) {
+				if (!i.name || i.name === "." || i.name === "..") continue;
+				let r = C(t.remotePath, i.name), a = i.type === "d", o = i.size;
+				if (i.type === "l") try {
+					let t = await e.sftp.stat(r);
+					a = t.isDirectory, o = t.size;
+				} catch {}
+				let s = a ? void 0 : u.posix.extname(i.name).toLowerCase() || void 0;
+				n.push({
+					name: i.name,
+					path: S(t.protocol, t.connectionId, r),
+					isDirectory: a,
+					size: a ? void 0 : o,
+					mtime: new Date(i.modifyTime || Date.now()).toISOString(),
+					ext: s,
+					permissions: Se(i.rights)
+				});
+			}
+			return n;
+		}
+		if (e.ftp) {
+			let r = await e.ftp.list(t.remotePath);
+			for (let e of r) {
+				if (!e.name || e.name === "." || e.name === "..") continue;
+				let r = e.isDirectory || e.type === v.Directory, i = C(t.remotePath, e.name), a = r ? void 0 : u.posix.extname(e.name).toLowerCase() || void 0;
+				n.push({
+					name: e.name,
+					path: S(t.protocol, t.connectionId, i),
+					isDirectory: r,
+					size: r ? void 0 : e.size ?? 0,
+					mtime: (e.modifiedAt || /* @__PURE__ */ new Date()).toISOString(),
+					ext: a
+				});
+			}
+			return n;
+		}
+		throw Error("Remote session is not initialized.");
+	});
+}
+async function we(e) {
+	let t = x(e);
+	if (!t) throw Error(`Invalid remote URI: ${e}`);
+	return M(t.connectionId, async (e) => {
+		let n = 0, r = 0, i = 0, a = /* @__PURE__ */ new Set(), o = [t.remotePath];
+		for (; o.length > 0;) {
+			let t = o.pop();
+			if (!a.has(t)) {
+				if (a.add(t), e.sftp) {
+					let a = [];
+					try {
+						a = await e.sftp.list(t);
+					} catch {
+						continue;
+					}
+					for (let e of a) {
+						if (!e.name || e.name === "." || e.name === ".." || e.type === "l") continue;
+						let a = C(t, e.name);
+						e.type === "d" ? (i++, o.push(a)) : (r++, n += e.size || 0);
+					}
+				} else if (e.ftp) {
+					let a = [];
+					try {
+						a = await e.ftp.list(t);
+					} catch {
+						continue;
+					}
+					for (let e of a) {
+						if (!e.name || e.name === "." || e.name === ".." || e.isSymbolicLink) continue;
+						let a = C(t, e.name);
+						e.isDirectory || e.type === v.Directory ? (i++, o.push(a)) : (r++, n += e.size || 0);
+					}
+				}
+			}
+		}
+		return {
+			size: n,
+			fileCount: r,
+			dirCount: i
+		};
+	});
+}
+async function Te(e, t) {
+	let n = x(e);
+	if (!n) throw Error(`Invalid remote URI: ${e}`);
+	return M(n.connectionId, async (e) => {
+		let r = /* @__PURE__ */ new Set();
+		if (e.sftp) {
+			let t = await e.sftp.list(n.remotePath);
+			for (let e of t) r.add(e.name);
+		} else if (e.ftp) {
+			let t = await e.ftp.list(n.remotePath);
+			for (let e of t) r.add(e.name);
+		}
+		let i = (t || "New folder").trim(), a = i, o = 1;
+		for (; r.has(a);) a = `${i} (${o})`, o++;
+		let s = C(n.remotePath, a);
+		if (e.sftp) await e.sftp.mkdir(s, !0);
+		else if (e.ftp) {
+			let t = await e.ftp.pwd().catch(() => "/");
+			await e.ftp.ensureDir(s), await e.ftp.cd(t).catch(() => {});
+		}
+		return S(n.protocol, n.connectionId, s);
+	});
+}
+async function Ee(e, t) {
+	let n = x(e);
+	if (!n) throw Error(`Invalid remote URI: ${e}`);
+	let r = t.trim().replace(/[\\/]/g, "");
+	if (!r || r === "." || r === "..") throw Error("Invalid file or folder name.");
+	let i = C(w(n.remotePath), r), a = S(n.protocol, n.connectionId, i);
+	return i === n.remotePath || await M(n.connectionId, async (e) => {
+		if (e.sftp) {
+			if (await e.sftp.exists(i)) throw Error(`An item named "${r}" already exists.`);
+			await e.sftp.rename(n.remotePath, i);
+		} else e.ftp && await e.ftp.rename(n.remotePath, i);
+	}), {
+		success: !0,
+		oldPath: e,
+		newPath: a
+	};
+}
+async function P(e, t) {
+	if (e.sftp) {
+		let n = await e.sftp.exists(t);
+		if (!n) return;
+		n === "d" ? await e.sftp.rmdir(t, !0) : await e.sftp.delete(t);
+		return;
+	}
+	if (e.ftp) {
+		let n = w(t), r = T(t), i = (await e.ftp.list(n)).find((e) => e.name === r);
+		i && (i.isDirectory || i.type === v.Directory) ? await e.ftp.removeDir(t) : await e.ftp.remove(t);
+	}
+}
+async function De(e) {
+	let t = [], n = [];
+	for (let r of e) {
+		let e = x(r), i = T(e?.remotePath || r);
+		if (!e) {
+			let e = `Invalid remote path: ${r}`;
+			n.push(e), t.push({
+				path: r,
+				name: i,
+				success: !1,
+				error: e
+			});
+			continue;
+		}
+		try {
+			await M(e.connectionId, async (t) => {
+				await P(t, e.remotePath);
+			}), t.push({
+				path: r,
+				name: i,
+				success: !0
+			});
+		} catch (e) {
+			let a = e?.message || String(e);
+			n.push(`Failed to delete "${i}": ${a}`), t.push({
+				path: r,
+				name: i,
+				success: !1,
+				error: a
+			});
+		}
+	}
+	let r = t.filter((e) => e.success).length, i = t.length - r, a = i === 0 ? r === 1 ? `Deleted "${t[0].name}" from server` : `Deleted ${r} items from server` : `Deleted ${r} of ${t.length} items (${i} failed).`;
+	return {
+		success: i === 0,
+		items: t,
+		summary: a,
+		errors: n
+	};
+}
+async function Oe(e, t, n) {
+	let r = [], i = 0, a = new m({ write(e, t, a) {
+		let o = Buffer.isBuffer(e) ? e : Buffer.from(e);
+		if (n && i + o.length > n) {
+			a(/* @__PURE__ */ Error("FILE_TOO_LARGE"));
+			return;
+		}
+		i += o.length, r.push(o), a();
+	} });
+	return await e.downloadTo(a, t), Buffer.concat(r);
+}
+async function ke(e, t = 1024 * 1024) {
+	let n = x(e);
+	if (!n) throw Error(`Invalid remote URI: ${e}`);
+	return M(n.connectionId, async (e) => {
+		if (e.sftp) {
+			if ((await e.sftp.stat(n.remotePath)).size > t) return "[File too large to preview as text. Download or \"Save as...\" to inspect locally.]";
+			let r = await e.sftp.get(n.remotePath);
+			return Buffer.isBuffer(r) ? r.toString("utf8") : String(r || "");
+		}
+		if (e.ftp) try {
+			return await e.ftp.size(n.remotePath).catch(() => 0) > t ? "[File too large to preview as text. Download or \"Save as...\" to inspect locally.]" : (await Oe(e.ftp, n.remotePath, t)).toString("utf8");
+		} catch (e) {
+			if (e?.message === "FILE_TOO_LARGE") return "[File too large to preview as text. Download or \"Save as...\" to inspect locally.]";
+			throw e;
+		}
+		throw Error("Remote session unavailable.");
+	});
+}
+async function Ae(e, t, n) {
+	let r = x(e);
+	if (!r) throw Error(`Invalid remote URI: ${e}`);
+	await d.mkdir(u.dirname(t), { recursive: !0 });
+	let i = T(r.remotePath);
+	await M(r.connectionId, async (e) => {
+		if (e.sftp) {
+			let a = -1;
+			await e.sftp.fastGet(r.remotePath, t, { step: (e, t, r) => {
+				if (n && r > 0) {
+					let t = Math.floor(e / r * 100);
+					t !== a && (t % 5 == 0 || t === 100) && (a = t, n({
+						line: `Downloading ${i} (${t}%)`,
+						fileName: i,
+						phase: "downloading"
+					}));
+				}
+			} });
+		} else if (e.ftp) {
+			e.ftp.trackProgress((e) => {
+				n && n({
+					line: `Downloading ${i} (${Math.round(e.bytes / 1024)} KB)...`,
+					fileName: i,
+					phase: "downloading"
+				});
+			});
+			try {
+				await e.ftp.downloadTo(t, r.remotePath);
+			} finally {
+				e.ftp.trackProgress();
+			}
+		}
+	});
+}
+async function F(e) {
+	let t = x(e);
+	if (!t) throw Error(`Invalid remote URI: ${e}`);
+	let n = ce();
+	await d.mkdir(n, { recursive: !0 });
+	let r = g.createHash("sha1").update(e).digest("hex").slice(0, 12), i = T(t.remotePath).replace(/[<>:"/\\|?*]/g, "_"), a = u.join(n, `${r}_${i}`);
+	return await Ae(e, a), a;
+}
+async function je(e, t, n, r) {
+	let i = u.basename(t);
+	if (e.sftp) {
+		let a = -1;
+		await e.sftp.fastPut(t, n, { step: (e, t, n) => {
+			if (r && n > 0) {
+				let t = Math.floor(e / n * 100);
+				t !== a && (t % 5 == 0 || t === 100) && (a = t, r({
+					line: `Uploading ${i} (${t}%)`,
+					fileName: i,
+					phase: "uploading"
+				}));
+			}
+		} });
+	} else if (e.ftp) {
+		e.ftp.trackProgress((e) => {
+			r && r({
+				line: `Uploading ${i} (${Math.round(e.bytes / 1024)} KB)...`,
+				fileName: i,
+				phase: "uploading"
+			});
+		});
+		try {
+			await e.ftp.uploadFrom(t, n);
+		} finally {
+			e.ftp.trackProgress();
+		}
+	}
+}
+async function I(e, t, n, r) {
+	let i = /* @__PURE__ */ new Set();
+	try {
+		if (e.sftp) {
+			let n = await e.sftp.list(t);
+			for (let e of n) i.add(e.name);
+		} else if (e.ftp) {
+			let n = await e.ftp.list(t);
+			for (let e of n) i.add(e.name);
+		}
+	} catch {}
+	if (!i.has(n) && !r) return C(t, n);
+	let a = u.posix.extname(n), o = a ? n.slice(0, -a.length) : n, s = r ? `${o} - Copy${a}` : n, c = 2;
+	for (; i.has(s);) s = r ? `${o} - Copy (${c})${a}` : `${o} (${c})${a}`, c++;
+	return C(t, s);
+}
+async function L(e, t, n, r) {
+	if ((await d.stat(t)).isDirectory()) {
+		if (e.sftp) await e.sftp.mkdir(n, !0);
+		else if (e.ftp) {
+			let t = await e.ftp.pwd().catch(() => "/");
+			await e.ftp.ensureDir(n), await e.ftp.cd(t).catch(() => {});
+		}
+		let i = await d.readdir(t);
+		for (let a of i) await L(e, u.join(t, a), C(n, a), r);
+	} else await je(e, t, n, r);
+}
+async function R(e, t, n, r, i, a) {
+	let o = !1;
+	if (e.sftp) o = (await e.sftp.stat(r)).isDirectory;
+	else if (e.ftp) {
+		let t = w(r), n = T(r), i = (await e.ftp.list(t)).find((e) => e.name === n);
+		o = !!(i && (i.isDirectory || i.type === v.Directory));
+	}
+	if (o) {
+		await d.mkdir(i, { recursive: !0 });
+		let o = [];
+		e.sftp ? o = (await e.sftp.list(r)).filter((e) => e.name !== "." && e.name !== "..").map((e) => e.name) : e.ftp && (o = (await e.ftp.list(r)).filter((e) => e.name !== "." && e.name !== "..").map((e) => e.name));
+		for (let s of o) await R(e, t, n, C(r, s), u.join(i, s), a);
+	} else {
+		await d.mkdir(u.dirname(i), { recursive: !0 });
+		let t = T(r);
+		if (e.sftp) {
+			let n = -1;
+			await e.sftp.fastGet(r, i, { step: (e, r, i) => {
+				if (a && i > 0) {
+					let r = Math.floor(e / i * 100);
+					r !== n && (r % 5 == 0 || r === 100) && (n = r, a({
+						line: `Downloading ${t} (${r}%)`,
+						fileName: t,
+						phase: "downloading"
+					}));
+				}
+			} });
+		} else if (e.ftp) {
+			e.ftp.trackProgress((e) => {
+				a && a({
+					line: `Downloading ${t} (${Math.round(e.bytes / 1024)} KB)...`,
+					fileName: t,
+					phase: "downloading"
+				});
+			});
+			try {
+				await e.ftp.downloadTo(i, r);
+			} finally {
+				e.ftp.trackProgress();
+			}
+		}
+	}
+}
+async function z(e, t, n, r, i) {
+	let a = x(t);
+	if (!a) throw Error(`Invalid remote target URI: ${t}`);
+	let o = [], s = [];
+	for (let t = 0; t < e.length; t++) {
+		let c = e[t], l = u.basename(c);
+		i?.({
+			line: `${n ? "Moving" : "Uploading"} ${l} (${t + 1}/${e.length})...`,
+			current: t + 1,
+			total: e.length,
+			fileName: l,
+			phase: "uploading"
+		});
+		try {
+			await d.access(c);
+			let e = await M(a.connectionId, async (e) => {
+				let t = await I(e, a.remotePath, l, !1);
+				return await L(e, c, t, i), S(a.protocol, a.connectionId, t);
+			});
+			n && await r(c), o.push({
+				src: c,
+				dest: e,
+				name: T(e),
+				success: !0
+			});
+		} catch (e) {
+			let t = e?.message || String(e);
+			s.push(`Failed to upload "${l}": ${t}`), o.push({
+				src: c,
+				name: l,
+				success: !1,
+				error: t
+			});
+		}
+	}
+	let c = o.filter((e) => e.success).length, l = o.length - c, f = l === 0 ? c === 1 ? `Uploaded "${o[0].name}"` : `Uploaded ${c} items` : `Uploaded ${c} of ${o.length} items (${l} failed).`;
+	return i?.({
+		line: f,
+		phase: l === 0 ? "complete" : "partial",
+		success: l === 0,
+		errors: s
+	}), {
+		success: l === 0,
+		type: n ? "move" : "copy",
+		target: t,
+		items: o,
+		summary: f,
+		errors: s
+	};
+}
+async function B(e, t, n, r, i) {
+	await d.mkdir(t, { recursive: !0 });
+	let a = [], o = [];
+	for (let s = 0; s < e.length; s++) {
+		let c = e[s], l = x(c), d = T(l?.remotePath || c);
+		if (i?.({
+			line: `${n ? "Moving" : "Downloading"} ${d} (${s + 1}/${e.length})...`,
+			current: s + 1,
+			total: e.length,
+			fileName: d,
+			phase: "downloading"
+		}), !l) {
+			let e = `Invalid remote URI: ${c}`;
+			o.push(e), a.push({
+				src: c,
+				name: d,
+				success: !1,
+				error: e
+			});
+			continue;
+		}
+		try {
+			let e = await r(t, d, !1);
+			await M(l.connectionId, async (t) => {
+				await R(t, l.protocol, l.connectionId, l.remotePath, e, i), n && await P(t, l.remotePath);
+			}), a.push({
+				src: c,
+				dest: e,
+				name: u.basename(e),
+				success: !0
+			});
+		} catch (e) {
+			let t = e?.message || String(e);
+			o.push(`Failed to download "${d}": ${t}`), a.push({
+				src: c,
+				name: d,
+				success: !1,
+				error: t
+			});
+		}
+	}
+	let s = a.filter((e) => e.success).length, c = a.length - s, l = c === 0 ? s === 1 ? `Downloaded "${a[0].name}"` : `Downloaded ${s} items` : `Downloaded ${s} of ${a.length} items (${c} failed).`;
+	return i?.({
+		line: l,
+		phase: c === 0 ? "complete" : "partial",
+		success: c === 0,
+		errors: o
+	}), {
+		success: c === 0,
+		type: n ? "move" : "copy",
+		target: t,
+		items: a,
+		summary: l,
+		errors: o
+	};
+}
+async function V(e, t, n, r) {
+	let i = x(t);
+	if (!i) throw Error(`Invalid remote target URI: ${t}`);
+	let a = [], o = [];
+	for (let t = 0; t < e.length; t++) {
+		let s = e[t], c = x(s), l = T(c?.remotePath || s);
+		if (r?.({
+			line: `${n ? "Moving" : "Copying"} ${l} (${t + 1}/${e.length})...`,
+			current: t + 1,
+			total: e.length,
+			fileName: l,
+			phase: n ? "moving" : "copying"
+		}), !c) {
+			let e = `Invalid remote URI: ${s}`;
+			o.push(e), a.push({
+				src: s,
+				name: l,
+				success: !1,
+				error: e
+			});
+			continue;
+		}
+		try {
+			let e = c.connectionId === i.connectionId, t = e && w(c.remotePath) === i.remotePath;
+			if (e && n && t) {
+				a.push({
+					src: s,
+					dest: s,
+					name: l,
+					success: !0
+				});
+				continue;
+			}
+			if (e && n) {
+				let e = await M(i.connectionId, async (e) => {
+					let t = await I(e, i.remotePath, l, !1);
+					return e.sftp ? await e.sftp.rename(c.remotePath, t) : e.ftp && await e.ftp.rename(c.remotePath, t), S(i.protocol, i.connectionId, t);
+				});
+				a.push({
+					src: s,
+					dest: e,
+					name: T(e),
+					success: !0
+				});
+			} else {
+				let e = await d.mkdtemp(u.join(h.tmpdir(), "jabro-relay-"));
+				try {
+					let o = u.join(e, l);
+					await M(c.connectionId, async (e) => {
+						await R(e, c.protocol, c.connectionId, c.remotePath, o, r);
+					});
+					let d = await M(i.connectionId, async (e) => {
+						let n = await I(e, i.remotePath, l, t);
+						return await L(e, o, n, r), S(i.protocol, i.connectionId, n);
+					});
+					n && await M(c.connectionId, async (e) => {
+						await P(e, c.remotePath);
+					}), a.push({
+						src: s,
+						dest: d,
+						name: T(d),
+						success: !0
+					});
+				} finally {
+					try {
+						await d.rm(e, {
+							recursive: !0,
+							force: !0
+						});
+					} catch {}
+				}
+			}
+		} catch (e) {
+			let t = e?.message || String(e);
+			o.push(`Failed to ${n ? "move" : "copy"} "${l}": ${t}`), a.push({
+				src: s,
+				name: l,
+				success: !1,
+				error: t
+			});
+		}
+	}
+	let s = a.filter((e) => e.success).length, c = a.length - s, l = c === 0 ? s === 1 ? `${n ? "Moved" : "Copied"} "${a[0].name}"` : `${n ? "Moved" : "Copied"} ${s} items` : `${n ? "Moved" : "Copied"} ${s} of ${a.length} items (${c} failed).`;
+	return r?.({
+		line: l,
+		phase: c === 0 ? "complete" : "partial",
+		success: c === 0,
+		errors: o
+	}), {
+		success: c === 0,
+		type: n ? "move" : "copy",
+		target: t,
+		items: a,
+		summary: l,
+		errors: o
+	};
+}
+async function Me() {
+	try {
+		let e = ce();
+		f.existsSync(e) && await d.rm(e, {
+			recursive: !0,
+			force: !0
+		});
+	} catch {}
+}
+//#endregion
 //#region electron/main.ts
-var b = v(h), x = v(g), S = y(import.meta.url), C = l.dirname(S);
+var Ne = ne(ee), Pe = ne(te), Fe = re(import.meta.url), Ie = u.dirname(Fe);
 t.commandLine.appendSwitch("enable-features", "SharedArrayBuffer"), t.commandLine.appendSwitch("allow-file-access-from-files"), t.commandLine.appendSwitch("disable-geolocation"), t.commandLine.appendSwitch("disable-background-networking"), t.commandLine.appendSwitch("disable-features", "Geolocation,WebBluetooth,WebUSB,MediaRouter"), a.registerSchemesAsPrivileged([{
 	scheme: "jabro-media",
 	privileges: {
@@ -21,21 +907,21 @@ t.commandLine.appendSwitch("enable-features", "SharedArrayBuffer"), t.commandLin
 		bypassCSP: !0
 	}
 }]);
-function w() {
-	return t.isPackaged ? l.join(process.resourcesPath, "app.asar", "dist-electron", "preload.js") : l.join(C, "preload.js");
+function Le() {
+	return t.isPackaged ? u.join(process.resourcesPath, "app.asar", "dist-electron", "preload.js") : u.join(Ie, "preload.js");
 }
-function T() {
-	return t.isPackaged ? l.join(process.resourcesPath, "app.asar", "dist", "index.html") : l.join(C, "../dist/index.html");
+function Re() {
+	return t.isPackaged ? u.join(process.resourcesPath, "app.asar", "dist", "index.html") : u.join(Ie, "../dist/index.html");
 }
-var E = null, D = () => l.join(t.getPath("userData"), "window-bounds.json");
-function O() {
+var H = null, U = () => u.join(t.getPath("userData"), "window-bounds.json");
+function ze() {
 	try {
-		if (d.existsSync(D())) {
-			let e = d.readFileSync(D(), "utf8"), t = JSON.parse(e);
+		if (f.existsSync(U())) {
+			let e = f.readFileSync(U(), "utf8"), t = JSON.parse(e);
 			if (t && typeof t.width == "number" && typeof t.height == "number") {
 				if (t.width < 400 || t.height < 300 || t.x !== void 0 && (t.x < -1e4 || t.y < -1e4)) return null;
 				try {
-					if (!o.getAllDisplays().some((e) => {
+					if (!s.getAllDisplays().some((e) => {
 						let n = e.bounds;
 						return t.x >= n.x - 200 && t.x < n.x + n.width && t.y >= n.y - 100 && t.y < n.y + n.height;
 					})) return null;
@@ -46,18 +932,18 @@ function O() {
 	} catch {}
 	return null;
 }
-function k(e) {
+function W(e) {
 	try {
 		if (!e || e.isDestroyed() || e.isMinimized()) return;
 		let t = {
 			...e.isMaximized() && e.getNormalBounds ? e.getNormalBounds() : e.getBounds(),
 			isMaximized: e.isMaximized()
 		};
-		d.writeFileSync(D(), JSON.stringify(t));
+		f.writeFileSync(U(), JSON.stringify(t));
 	} catch {}
 }
-function A() {
-	let t = O(), n = {
+function Be() {
+	let t = ze(), n = {
 		width: 1180,
 		height: 780,
 		minWidth: 820,
@@ -75,45 +961,45 @@ function A() {
 			y: 13
 		} } : {},
 		webPreferences: {
-			preload: w(),
+			preload: Le(),
 			contextIsolation: !0,
 			nodeIntegration: !1,
 			webSecurity: !1
 		}
 	};
-	t && (n.x = t.x, n.y = t.y, n.width = t.width, n.height = t.height), E = new e(n), t && t.isMaximized && E.maximize();
+	t && (n.x = t.x, n.y = t.y, n.width = t.width, n.height = t.height), H = new e(n), t && t.isMaximized && H.maximize();
 	let r = process.env.VITE_DEV_SERVER_URL;
 	if (r) {
 		let e = () => {
-			E?.loadURL(r).catch((t) => {
+			H?.loadURL(r).catch((t) => {
 				console.warn("[Main] Dev server connect failed, retrying in 350ms...", t), setTimeout(() => {
-					E && !E.isDestroyed() && e();
+					H && !H.isDestroyed() && e();
 				}, 350);
 			});
 		};
 		e();
-	} else E.loadFile(T()).catch((e) => {
+	} else H.loadFile(Re()).catch((e) => {
 		console.error("[Main] Failed to load index.html:", e);
 	});
-	E.webContents.on("did-fail-load", (e, t, n, i) => {
+	H.webContents.on("did-fail-load", (e, t, n, i) => {
 		console.warn(`[Main] did-fail-load: ${n} (${t}) for ${i}`), r && i && i.includes("localhost") && setTimeout(() => {
-			E && !E.isDestroyed() && (console.log("[Main] Dev server retry on did-fail-load..."), E.loadURL(r).catch(() => {}));
+			H && !H.isDestroyed() && (console.log("[Main] Dev server retry on did-fail-load..."), H.loadURL(r).catch(() => {}));
 		}, 500);
-	}), E.webContents.on("render-process-gone", (e, t) => {
-		console.error("[Main] Render process gone:", t), t.reason !== "clean-exit" && E && !E.isDestroyed() && E.reload();
-	}), E.webContents.on("console-message", ({ level: e, message: t, lineNumber: n, sourceId: r }) => {
+	}), H.webContents.on("render-process-gone", (e, t) => {
+		console.error("[Main] Render process gone:", t), t.reason !== "clean-exit" && H && !H.isDestroyed() && H.reload();
+	}), H.webContents.on("console-message", ({ level: e, message: t, lineNumber: n, sourceId: r }) => {
 		console.log(`[Renderer LOG ${e}] ${t} (${r}:${n})`);
-	}), E.on("moved", () => k(E)), E.on("resized", () => k(E)), E.on("close", () => k(E)), E.on("closed", () => {
-		E = null;
+	}), H.on("moved", () => W(H)), H.on("resized", () => W(H)), H.on("close", () => W(H)), H.on("closed", () => {
+		H = null;
 	});
 }
 r.on("get-home-dir", (e) => {
-	e.returnValue = p.homedir();
+	e.returnValue = h.homedir();
 }), t.whenReady().then(() => {
-	s.defaultSession.webRequest.onHeadersReceived((e, t) => {
+	c.defaultSession.webRequest.onHeadersReceived((e, t) => {
 		let n = { ...e.responseHeaders };
 		e.resourceType === "mainFrame" && !e.url.startsWith("chrome-extension:") && (n["Cross-Origin-Opener-Policy"] = ["same-origin"], n["Cross-Origin-Embedder-Policy"] = ["credentialless"]), t({ responseHeaders: n });
-	}), s.defaultSession.setPermissionRequestHandler((e, t, n) => {
+	}), c.defaultSession.setPermissionRequestHandler((e, t, n) => {
 		let r = t;
 		if ([
 			"geolocation",
@@ -123,7 +1009,7 @@ r.on("get-home-dir", (e) => {
 			"media"
 		].includes(r)) return n(!1);
 		n(!0);
-	}), s.defaultSession.setPermissionCheckHandler((e, t) => {
+	}), c.defaultSession.setPermissionCheckHandler((e, t) => {
 		let n = t;
 		return ![
 			"geolocation",
@@ -140,10 +1026,10 @@ r.on("get-home-dir", (e) => {
 				let e = decodeURIComponent(n.pathname);
 				process.platform === "win32" && e.startsWith("/") && /^[a-zA-Z]:/.test(e.slice(1)) && (e = e.slice(1)), t = e;
 			}
-			t &&= ((t.startsWith("\\\\?\\") || t.startsWith("//?/")) && (t = t.slice(4)), l.normalize(t));
-			let r = await u.stat(t), i = l.extname(t).toLowerCase(), a = new Headers(), o = "";
+			t && (y(t) ? t = await F(t) : ((t.startsWith("\\\\?\\") || t.startsWith("//?/")) && (t = t.slice(4)), t = u.normalize(t)));
+			let r = await d.stat(t), i = u.extname(t).toLowerCase(), a = new Headers(), o = "";
 			i === ".pdf" ? o = "application/pdf" : i === ".jpg" || i === ".jpeg" ? o = "image/jpeg" : i === ".png" ? o = "image/png" : i === ".webp" ? o = "image/webp" : i === ".gif" ? o = "image/gif" : i === ".svg" ? o = "image/svg+xml" : i === ".bmp" ? o = "image/bmp" : i === ".ico" ? o = "image/x-icon" : i === ".tga" ? o = "image/x-tga" : i === ".dds" ? o = "image/vnd-ms.dds" : i === ".glb" ? o = "model/gltf-binary" : i === ".gltf" ? o = "model/gltf+json" : i === ".wasm" ? o = "application/wasm" : i === ".js" ? o = "application/javascript" : i === ".obj" ? o = "text/plain" : (i === ".stl" || i === ".ply" || i === ".splat" || i === ".ksplat" || i === ".spz" || i === ".fbx") && (o = "application/octet-stream"), o && a.set("content-type", o), a.set("access-control-allow-origin", "*"), a.set("access-control-expose-headers", "Content-Length, Content-Range, Accept-Ranges"), a.set("accept-ranges", "bytes"), a.set("Cross-Origin-Resource-Policy", "cross-origin");
-			let s = e.headers.get("range"), c = 200, p;
+			let s = e.headers.get("range"), c = 200, l;
 			if (s) {
 				let e = /bytes=(\d*)-(\d*)/.exec(s);
 				if (e) {
@@ -154,14 +1040,14 @@ r.on("get-home-dir", (e) => {
 					} else n = parseInt(e[1], 10), i = e[2] ? parseInt(e[2], 10) : r.size - 1;
 					if (!isNaN(n) && n < r.size) {
 						let e = Math.min(isNaN(i) ? r.size - 1 : i, r.size - 1), o = e - n + 1;
-						a.set("content-length", o.toString()), a.set("content-range", `bytes ${n}-${e}/${r.size}`), c = 206, p = d.createReadStream(t, {
+						a.set("content-length", o.toString()), a.set("content-range", `bytes ${n}-${e}/${r.size}`), c = 206, l = f.createReadStream(t, {
 							start: n,
 							end: e
 						});
-					} else a.set("content-length", r.size.toString()), p = d.createReadStream(t);
-				} else a.set("content-length", r.size.toString()), p = d.createReadStream(t);
-			} else a.set("content-length", r.size.toString()), p = d.createReadStream(t);
-			let m = f.toWeb(p);
+					} else a.set("content-length", r.size.toString()), l = f.createReadStream(t);
+				} else a.set("content-length", r.size.toString()), l = f.createReadStream(t);
+			} else a.set("content-length", r.size.toString()), l = f.createReadStream(t);
+			let m = p.toWeb(l);
 			return new Response(m, {
 				status: c,
 				headers: a
@@ -171,26 +1057,29 @@ r.on("get-home-dir", (e) => {
 		}
 	}), r.handle("detect-ply-type", async (e, t) => {
 		try {
-			let e = await u.open(t, "r"), n = Buffer.alloc(4096), { bytesRead: r } = await e.read(n, 0, 4096, 0);
-			await e.close();
-			let i = n.toString("utf8", 0, r);
-			return i.includes("f_dc_") || i.includes("opacity") || i.includes("scale_0") || i.includes("rot_0") || i.includes("packed_position") ? "gaussian-splat" : "3d";
+			let e = y(t) ? await F(t) : t, n = await d.open(e, "r"), r = Buffer.alloc(4096), { bytesRead: i } = await n.read(r, 0, 4096, 0);
+			await n.close();
+			let a = r.toString("utf8", 0, i);
+			return a.includes("f_dc_") || a.includes("opacity") || a.includes("scale_0") || a.includes("rot_0") || a.includes("packed_position") ? "gaussian-splat" : "3d";
 		} catch (e) {
 			return console.error("detect-ply-type error:", e), "3d";
 		}
-	}), A(), t.on("activate", () => {
-		e.getAllWindows().length === 0 && A();
+	}), Be(), t.on("activate", () => {
+		e.getAllWindows().length === 0 && Be();
 	});
 }), t.on("window-all-closed", () => {
 	process.platform !== "darwin" && t.quit();
+}), t.on("before-quit", () => {
+	xe().catch(() => {}), Me().catch(() => {});
 }), r.handle("list-directory", async (e, t) => {
+	if (y(t)) return Ce(t);
 	try {
-		let e = await u.readdir(t, { withFileTypes: !0 }), n = [];
+		let e = await d.readdir(t, { withFileTypes: !0 }), n = [];
 		for (let r of e) {
 			if (r.name.startsWith("._")) continue;
-			let e = l.join(t, r.name), i = r.isDirectory(), a = i ? void 0 : l.extname(r.name).toLowerCase() || void 0, o = (/* @__PURE__ */ new Date()).toISOString(), s;
+			let e = u.join(t, r.name), i = r.isDirectory(), a = i ? void 0 : u.extname(r.name).toLowerCase() || void 0, o = (/* @__PURE__ */ new Date()).toISOString(), s;
 			try {
-				let t = await u.stat(e);
+				let t = await d.stat(e);
 				o = t.mtime.toISOString(), i || (s = t.size);
 			} catch {
 				i || (s = 0);
@@ -209,24 +1098,24 @@ r.on("get-home-dir", (e) => {
 		return console.error("list-directory error", t, e), [];
 	}
 });
-async function j(e, t = 12) {
+async function Ve(e, t = 12) {
 	let n = 0, r = 0, i = 0, a = [e], o = [], s = async () => {
 		for (; a.length > 0;) {
 			let t = a.shift();
 			if (!t) break;
 			let o;
 			try {
-				o = await u.readdir(t, { withFileTypes: !0 });
+				o = await d.readdir(t, { withFileTypes: !0 });
 			} catch {
 				continue;
 			}
 			t !== e && i++;
 			for (let e of o) {
 				if (e.name.startsWith("._")) continue;
-				let i = l.join(t, e.name);
+				let i = u.join(t, e.name);
 				if (e.isDirectory()) a.push(i);
 				else if (e.isFile()) try {
-					let e = await u.stat(i);
+					let e = await d.stat(i);
 					n += e.size, r++;
 				} catch {}
 			}
@@ -241,7 +1130,7 @@ async function j(e, t = 12) {
 }
 r.handle("get-folder-size", async (e, t) => {
 	try {
-		return await j(t);
+		return y(t) ? await we(t) : await Ve(t);
 	} catch (e) {
 		return console.error("get-folder-size failed", t, e), {
 			size: 0,
@@ -250,25 +1139,25 @@ r.handle("get-folder-size", async (e, t) => {
 		};
 	}
 });
-async function M(e, t = 50, n = 5e4) {
+async function He(e, t = 50, n = 5e4) {
 	let r = [], i = [e], a = 0;
 	for (; i.length > 0 && a < n;) {
 		let e = i.shift();
 		if (!e) break;
 		let n;
 		try {
-			n = await u.readdir(e, { withFileTypes: !0 });
+			n = await d.readdir(e, { withFileTypes: !0 });
 		} catch {
 			continue;
 		}
 		for (let o of n) {
 			if (o.name.startsWith("._") || o.name === "$RECYCLE.BIN" || o.name === "System Volume Information") continue;
-			let n = l.join(e, o.name);
+			let n = u.join(e, o.name);
 			if (o.isDirectory()) i.push(n);
 			else if (o.isFile()) {
 				a++;
 				try {
-					let e = await u.stat(n), i = l.extname(o.name), a = {
+					let e = await d.stat(n), i = u.extname(o.name), a = {
 						name: o.name,
 						path: n,
 						size: e.size,
@@ -284,71 +1173,71 @@ async function M(e, t = 50, n = 5e4) {
 }
 r.handle("find-largest-files", async (e, { dirPath: t, limit: n }) => {
 	try {
-		return await M(t, n || 50);
+		return await He(t, n || 50);
 	} catch (e) {
 		return console.error("find-largest-files failed", t, e), [];
 	}
 });
-function N(e) {
+function G(e) {
 	let t = (e || "").trim();
 	return t = t.replace(/^["']|["']$/g, ""), /^[A-Za-z]:$/.test(t) && (t += "\\"), t;
 }
-function P(e, t) {
-	let n = l.resolve(e), r = l.resolve(t);
+function K(e, t) {
+	let n = u.resolve(e), r = u.resolve(t);
 	return process.platform === "linux" ? n === r : n.toLowerCase() === r.toLowerCase();
 }
-function F(e, t) {
-	let n = e?.code, r = l.basename(t);
+function q(e, t) {
+	let n = e?.code, r = u.basename(t);
 	return n === "EBUSY" ? `"${r}" is locked or currently open in another program.` : n === "EPERM" || n === "EACCES" ? `Permission denied for "${r}". You may need administrator rights, or the file/folder is write-protected.` : n === "ENOENT" ? `"${r}" could not be found or the destination folder does not exist.` : n === "ENOSPC" ? `Not enough free disk space on the target drive to copy "${r}".` : n === "EINVAL" ? `The file name or path "${r}" contains characters not supported by the file system.` : e?.message?.includes("robocopy failed") ? `Folder copy failed for "${r}" (${e.message}).` : e?.message || `Failed to process "${r}".`;
 }
-async function I(e, t, n) {
-	let r = l.parse(t), i = r.name || t, a = r.ext || "", o = l.join(e, t);
+async function J(e, t, n) {
+	let r = u.parse(t), i = r.name || t, a = r.ext || "", o = u.join(e, t);
 	try {
-		await u.access(o);
+		await d.access(o);
 	} catch {
 		return o;
 	}
 	let s = 1;
 	for (; s < 9999;) {
-		let t = n && s === 1 ? `${i} - Copy${a}` : `${i} (${s})${a}`, r = l.join(e, t);
+		let t = n && s === 1 ? `${i} - Copy${a}` : `${i} (${s})${a}`, r = u.join(e, t);
 		try {
-			await u.access(r), s++;
+			await d.access(r), s++;
 		} catch {
 			return r;
 		}
 	}
-	return l.join(e, `${i}_${Date.now()}${a}`);
+	return u.join(e, `${i}_${Date.now()}${a}`);
 }
-async function L(e, t) {
-	let n = l.dirname(t);
-	await u.mkdir(n, { recursive: !0 });
+async function Ue(e, t) {
+	let n = u.dirname(t);
+	await d.mkdir(n, { recursive: !0 });
 	try {
-		await u.chmod(t, 438);
+		await d.chmod(t, 438);
 	} catch {}
 	let r = null;
 	for (let n = 0; n < 3; n++) try {
-		await u.copyFile(e, t), r = null;
+		await d.copyFile(e, t), r = null;
 		break;
 	} catch (e) {
 		if (r = e, e.code === "EPERM" || e.code === "EACCES") try {
-			await u.chmod(t, 438);
+			await d.chmod(t, 438);
 		} catch {}
 		n < 2 && await new Promise((e) => setTimeout(e, 120 * (n + 1)));
 	}
 	if (r) try {
 		await new Promise((n, r) => {
-			let i = d.createReadStream(e), a = d.createWriteStream(t, { flags: "w" });
+			let i = f.createReadStream(e), a = f.createWriteStream(t, { flags: "w" });
 			i.on("error", r), a.on("error", r), a.on("finish", n), i.pipe(a);
 		}), r = null;
 	} catch (e) {
 		throw r || e;
 	}
 	try {
-		let n = await u.stat(e);
-		await u.utimes(t, n.atime, n.mtime);
+		let n = await d.stat(e);
+		await d.utimes(t, n.atime, n.mtime);
 	} catch {}
 }
-async function R(e, t) {
+async function We(e, t) {
 	let n = process.platform === "win32" ? /[\\/]+$/ : /\/+$/, r = e.replace(n, "") || e, i = t.replace(n, "") || t;
 	if (process.platform === "win32") {
 		let e = !1, t = null;
@@ -369,10 +1258,10 @@ async function R(e, t) {
 				]);
 				n.stdout?.on("data", (e) => {
 					let t = e.toString().trim();
-					t && E && E.webContents.send("copy-progress", { line: t.substring(0, 120) });
+					t && H && H.webContents.send("copy-progress", { line: t.substring(0, 120) });
 				}), n.stderr?.on("data", (e) => {
 					let t = e.toString().trim();
-					t && E && E.webContents.send("copy-progress", { line: "ERR: " + t.substring(0, 110) });
+					t && H && H.webContents.send("copy-progress", { line: "ERR: " + t.substring(0, 110) });
 				}), n.on("close", (n) => {
 					n >= 8 ? t(/* @__PURE__ */ Error(`robocopy failed with exit code ${n}`)) : e();
 				}), n.on("error", (e) => {
@@ -385,24 +1274,24 @@ async function R(e, t) {
 		if (!e) return;
 		console.warn("robocopy failed, falling back to fs.cp:", t?.message);
 	}
-	await u.cp(e, t, {
+	await d.cp(e, t, {
 		recursive: !0,
 		force: !0,
 		preserveTimestamps: !0
 	});
 }
-async function z(e, t) {
-	(await u.stat(e)).isDirectory() ? (await R(e, t), E && E.webContents.send("copy-progress", { line: `Copied folder: ${l.basename(t)}` })) : (await L(e, t), E && E.webContents.send("copy-progress", { line: `Copied file: ${l.basename(t)}` }));
+async function Ge(e, t) {
+	(await d.stat(e)).isDirectory() ? (await We(e, t), H && H.webContents.send("copy-progress", { line: `Copied folder: ${u.basename(t)}` })) : (await Ue(e, t), H && H.webContents.send("copy-progress", { line: `Copied file: ${u.basename(t)}` }));
 }
-async function B(e) {
+async function Y(e) {
 	try {
-		await u.rm(e, {
+		await d.rm(e, {
 			recursive: !0,
 			force: !0
 		});
 	} catch (t) {
 		try {
-			await u.chmod(e, 438), await u.rm(e, {
+			await d.chmod(e, 438), await d.rm(e, {
 				recursive: !0,
 				force: !0
 			});
@@ -411,61 +1300,74 @@ async function B(e) {
 		}
 	}
 }
-async function V(e) {
-	let t = "New folder", n = t, r = l.join(e, n), i = 1;
+async function Ke(e) {
+	let t = "New folder", n = t, r = u.join(e, n), i = 1;
 	for (;;) try {
-		await u.access(r), n = `${t} (${i})`, r = l.join(e, n), i++;
+		await d.access(r), n = `${t} (${i})`, r = u.join(e, n), i++;
 	} catch {
 		break;
 	}
-	return await u.mkdir(r), r;
+	return await d.mkdir(r), r;
 }
-async function H(e) {
+async function qe(e) {
 	if (process.platform !== "win32") throw Error("Administrator elevation is only supported on Windows.");
-	let t = N(e.target), n = !!e.isMove, r = e.action === "createFolder", i = [];
+	let t = G(e.target), n = !!e.isMove, r = e.action === "createFolder", i = e.action === "delete", a = e.action === "rename", o = [];
 	if (r) {
-		let n = e.newFolderName || "New folder", r = l.join(t, n), a = 1;
+		let n = e.newFolderName || "New folder", r = u.join(t, n), i = 1;
 		for (;;) try {
-			await u.access(r), r = l.join(t, `${n} (${a})`), a++;
+			await d.access(r), r = u.join(t, `${n} (${i})`), i++;
 		} catch {
 			break;
 		}
-		i.push({
+		o.push({
 			dest: r,
 			action: "createFolder",
 			isDirectory: !0
 		});
+	} else if (i && e.sources && e.sources.length > 0) for (let t of e.sources) o.push({
+		src: t,
+		dest: t,
+		action: "delete"
+	});
+	else if (a && e.sources && e.sources.length > 0 && e.newName) {
+		let t = e.sources[0];
+		o.push({
+			src: t,
+			dest: u.join(u.dirname(t), e.newName),
+			action: "rename",
+			newName: e.newName
+		});
 	} else if (e.sources && e.sources.length > 0) for (let r of e.sources) {
-		let a = e.customDestFileName && e.sources.length === 1 ? e.customDestFileName : l.basename(r), o = !1;
+		let i = e.customDestFileName && e.sources.length === 1 ? e.customDestFileName : u.basename(r), a = !1;
 		try {
-			o = (await u.stat(r)).isDirectory();
+			a = (await d.stat(r)).isDirectory();
 		} catch {}
-		let s = P(l.dirname(l.resolve(r)), t), c = e.customDestFileName && e.sources.length === 1 ? l.join(t, e.customDestFileName) : await I(t, a, s && !n);
-		i.push({
+		let s = K(u.dirname(u.resolve(r)), t), c = e.customDestFileName && e.sources.length === 1 ? u.join(t, e.customDestFileName) : await J(t, i, s && !n);
+		o.push({
 			src: r,
 			dest: c,
 			action: n ? "move" : "copy",
-			isDirectory: o
+			isDirectory: a
 		});
 	}
-	if (i.length === 0) return {
+	if (o.length === 0) return {
 		success: !0,
 		items: []
 	};
-	let a = `jabro_elevated_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`, o = l.join(p.tmpdir(), `${a}_config.json`), s = l.join(p.tmpdir(), `${a}_worker.ps1`), c = l.join(p.tmpdir(), `${a}_result.json`), f = {
+	let s = `jabro_elevated_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`, c = u.join(h.tmpdir(), `${s}_config.json`), l = u.join(h.tmpdir(), `${s}_worker.ps1`), p = u.join(h.tmpdir(), `${s}_result.json`), m = {
 		isMove: n,
 		targetDir: t,
-		items: i,
-		resultFile: c
+		items: o,
+		resultFile: p
 	};
-	await u.writeFile(o, JSON.stringify(f, null, 2), "utf8"), await u.writeFile(s, "\nparam([string]$ConfigPath)\n\n$result = @{\n    success = $false\n    items = @()\n    error = $null\n}\n\ntry {\n    $raw = [System.IO.File]::ReadAllText($ConfigPath, [System.Text.Encoding]::UTF8)\n    $cfg = $raw | ConvertFrom-Json\n    $resPath = [string]$cfg.resultFile\n\n    if (-not (Test-Path -LiteralPath $cfg.targetDir)) {\n        New-Item -ItemType Directory -LiteralPath $cfg.targetDir -Force | Out-Null\n    }\n\n    foreach ($item in $cfg.items) {\n        $src = [string]$item.src\n        $dest = [string]$item.dest\n        $act = [string]$item.action\n        $isDir = [bool]$item.isDirectory\n\n        try {\n            if ($act -eq 'createFolder') {\n                New-Item -ItemType Directory -LiteralPath $dest -Force | Out-Null\n            } elseif ($act -eq 'move') {\n                if (Test-Path -LiteralPath $dest) {\n                    Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction SilentlyContinue\n                }\n                Move-Item -LiteralPath $src -Destination $dest -Force -ErrorAction Stop\n            } else {\n                if ($isDir) {\n                    if (-not (Test-Path -LiteralPath $dest)) {\n                        New-Item -ItemType Directory -LiteralPath $dest -Force | Out-Null\n                    }\n                    $cleanSrc = $src.TrimEnd('\\', '/')\n                    $cleanDest = $dest.TrimEnd('\\', '/')\n                    $rcArgs = @($cleanSrc, $cleanDest, '/E', '/COPY:DAT', '/R:1', '/W:1', '/IS', '/NFL', '/NDL', '/NP')\n                    $rcProc = Start-Process -FilePath \"robocopy.exe\" -ArgumentList $rcArgs -Wait -NoNewWindow -PassThru\n                    if ($rcProc.ExitCode -ge 8) {\n                        Copy-Item -LiteralPath $src -Destination $dest -Recurse -Force -ErrorAction Stop\n                    }\n                } else {\n                    Copy-Item -LiteralPath $src -Destination $dest -Force -ErrorAction Stop\n                }\n            }\n\n            $result.items += @{\n                src = $src\n                dest = $dest\n                name = [System.IO.Path]::GetFileName($dest)\n                success = $true\n            }\n        } catch {\n            $result.items += @{\n                src = $src\n                dest = $dest\n                name = [System.IO.Path]::GetFileName($src)\n                success = $false\n                error = $_.Exception.Message\n            }\n        }\n    }\n\n    $failed = ($result.items | Where-Object { -not $_.success }).Count\n    if ($failed -eq 0) {\n        $result.success = $true\n    } else {\n        $result.success = $false\n        $result.error = \"Some items failed to copy with administrator rights.\"\n    }\n} catch {\n    $result.success = $false\n    $result.error = $_.Exception.Message\n} finally {\n    if ($resPath) {\n        $out = $result | ConvertTo-Json -Depth 5\n        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)\n        [System.IO.File]::WriteAllText($resPath, $out, $utf8NoBom)\n    }\n}\n", "utf8");
-	let m = `
+	await d.writeFile(c, JSON.stringify(m, null, 2), "utf8"), await d.writeFile(l, "\nparam([string]$ConfigPath)\n\n$result = @{\n    success = $false\n    items = @()\n    error = $null\n}\n\ntry {\n    $raw = [System.IO.File]::ReadAllText($ConfigPath, [System.Text.Encoding]::UTF8)\n    $cfg = $raw | ConvertFrom-Json\n    $resPath = [string]$cfg.resultFile\n\n    if (-not (Test-Path -LiteralPath $cfg.targetDir)) {\n        New-Item -ItemType Directory -LiteralPath $cfg.targetDir -Force | Out-Null\n    }\n\n    foreach ($item in $cfg.items) {\n        $src = [string]$item.src\n        $dest = [string]$item.dest\n        $act = [string]$item.action\n        $isDir = [bool]$item.isDirectory\n        $newName = [string]$item.newName\n\n        try {\n            if ($act -eq 'createFolder') {\n                New-Item -ItemType Directory -LiteralPath $dest -Force | Out-Null\n            } elseif ($act -eq 'delete') {\n                Remove-Item -LiteralPath $src -Recurse -Force -ErrorAction Stop\n            } elseif ($act -eq 'rename') {\n                Rename-Item -LiteralPath $src -NewName $newName -Force -ErrorAction Stop\n            } elseif ($act -eq 'move') {\n                if (Test-Path -LiteralPath $dest) {\n                    Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction SilentlyContinue\n                }\n                Move-Item -LiteralPath $src -Destination $dest -Force -ErrorAction Stop\n            } else {\n                if ($isDir) {\n                    if (-not (Test-Path -LiteralPath $dest)) {\n                        New-Item -ItemType Directory -LiteralPath $dest -Force | Out-Null\n                    }\n                    $cleanSrc = $src.TrimEnd('\\', '/')\n                    $cleanDest = $dest.TrimEnd('\\', '/')\n                    $rcArgs = @($cleanSrc, $cleanDest, '/E', '/COPY:DAT', '/R:1', '/W:1', '/IS', '/NFL', '/NDL', '/NP')\n                    $rcProc = Start-Process -FilePath \"robocopy.exe\" -ArgumentList $rcArgs -Wait -NoNewWindow -PassThru\n                    if ($rcProc.ExitCode -ge 8) {\n                        Copy-Item -LiteralPath $src -Destination $dest -Recurse -Force -ErrorAction Stop\n                    }\n                } else {\n                    Copy-Item -LiteralPath $src -Destination $dest -Force -ErrorAction Stop\n                }\n            }\n\n            $result.items += @{\n                src = $src\n                dest = $dest\n                name = [System.IO.Path]::GetFileName($dest)\n                success = $true\n            }\n        } catch {\n            $result.items += @{\n                src = $src\n                dest = $dest\n                name = [System.IO.Path]::GetFileName($src)\n                success = $false\n                error = $_.Exception.Message\n            }\n        }\n    }\n\n    $failed = ($result.items | Where-Object { -not $_.success }).Count\n    if ($failed -eq 0) {\n        $result.success = $true\n    } else {\n        $result.success = $false\n        $result.error = \"Some items failed to copy with administrator rights.\"\n    }\n} catch {\n    $result.success = $false\n    $result.error = $_.Exception.Message\n} finally {\n    if ($resPath) {\n        $out = $result | ConvertTo-Json -Depth 5\n        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)\n        [System.IO.File]::WriteAllText($resPath, $out, $utf8NoBom)\n    }\n}\n", "utf8");
+	let g = `
 try {
   $p = Start-Process powershell.exe -Verb RunAs -Wait -WindowStyle Hidden -PassThru -ArgumentList @(
       '-NoProfile',
       '-ExecutionPolicy', 'Bypass',
-      '-File', '${s.replace(/'/g, "''")}',
-      '${o.replace(/'/g, "''")}'
+      '-File', '${l.replace(/'/g, "''")}',
+      '${c.replace(/'/g, "''")}'
   );
   if ($p.ExitCode -ne 0) {
     exit $p.ExitCode;
@@ -476,16 +1378,16 @@ try {
 }
 `;
 	return new Promise((e, t) => {
-		let a = _("powershell.exe", [
+		let s = _("powershell.exe", [
 			"-NoProfile",
 			"-Command",
-			m
-		], { windowsHide: !0 }), f = "";
-		a.stderr?.on("data", (e) => {
-			f += e.toString();
-		}), a.on("close", async (t) => {
+			g
+		], { windowsHide: !0 }), m = "";
+		s.stderr?.on("data", (e) => {
+			m += e.toString();
+		}), s.on("close", async (t) => {
 			try {
-				if (t === 1223 || f.includes("UAC_CANCELLED") || f.includes("canceled by the user")) {
+				if (t === 1223 || m.includes("UAC_CANCELLED") || m.includes("canceled by the user")) {
 					e({
 						success: !1,
 						cancelled: !0,
@@ -493,41 +1395,41 @@ try {
 					});
 					return;
 				}
-				let a = null;
+				let s = null;
 				try {
-					if (d.existsSync(c)) {
-						let e = await u.readFile(c, "utf8");
-						a = JSON.parse(e.replace(/^\uFEFF/, ""));
+					if (f.existsSync(p)) {
+						let e = await d.readFile(p, "utf8");
+						s = JSON.parse(e.replace(/^\uFEFF/, ""));
 					}
 				} catch (e) {
 					console.error("Failed to read elevated result file:", e);
 				}
-				a && a.success ? e({
+				s && s.success ? e({
 					success: !0,
-					items: a.items,
-					summary: r ? `Created folder "${l.basename(i[0]?.dest)}"` : `Successfully ${n ? "moved" : "copied"} ${a.items?.length || 1} items with administrator privileges.`
+					items: s.items,
+					summary: r ? `Created folder "${u.basename(o[0]?.dest)}"` : i ? `Deleted ${s.items?.length || 1} item(s) with administrator privileges.` : a ? "Renamed item with administrator privileges." : `Successfully ${n ? "moved" : "copied"} ${s.items?.length || 1} items with administrator privileges.`
 				}) : e({
 					success: !1,
-					error: a?.error || `Elevation process exited with code ${t}`,
-					items: a?.items || []
+					error: s?.error || `Elevation process exited with code ${t}`,
+					items: s?.items || []
 				});
 			} finally {
 				try {
-					await u.unlink(o);
+					await d.unlink(c);
 				} catch {}
 				try {
-					await u.unlink(s);
+					await d.unlink(l);
 				} catch {}
 				try {
-					await u.unlink(c);
+					await d.unlink(p);
 				} catch {}
 			}
-		}), a.on("error", (e) => {
+		}), s.on("error", (e) => {
 			t(e);
 		});
 	});
 }
-function U(e, t) {
+function X(e, t) {
 	r.handle(e, async (e, ...n) => {
 		let r = await t(e, ...n);
 		if (process.platform !== "win32" && r && r.requiresElevation) {
@@ -541,198 +1443,249 @@ function U(e, t) {
 		return r;
 	});
 }
-r.handle("perform-elevated-op", async (e, t) => H(t)), U("copy-files", async (e, { sources: t, target: n }) => {
-	let r = N(n);
+r.handle("perform-elevated-op", async (e, t) => qe(t));
+var Z = (e) => {
+	H && !H.isDestroyed() && H.webContents.send("copy-progress", e);
+};
+X("copy-files", async (e, { sources: t, target: n }) => {
+	let r = y(n), i = t.filter((e) => y(e)), a = t.filter((e) => !y(e));
+	if (r || i.length > 0) {
+		if (r && a.length > 0 && i.length === 0) return z(a, n, !1, Y, Z);
+		if (!r && i.length > 0 && a.length === 0) return B(i, G(n), !1, J, Z);
+		if (r && i.length > 0 && a.length === 0) return V(i, n, !1, Z);
+		let e = [], t = [];
+		if (a.length > 0) {
+			let i = r ? await z(a, n, !1, Y, Z) : null;
+			i && (e.push(...i.items || []), t.push(...i.errors || []));
+		}
+		if (i.length > 0) {
+			let a = r ? await V(i, n, !1, Z) : await B(i, G(n), !1, J, Z);
+			e.push(...a.items || []), t.push(...a.errors || []);
+		}
+		return {
+			success: t.length === 0,
+			type: "copy",
+			target: n,
+			items: e,
+			summary: t.length === 0 ? `Copied ${e.length} items` : t[0],
+			errors: t
+		};
+	}
+	let o = G(n);
 	try {
-		(await u.stat(r)).isDirectory() || (r = l.dirname(r));
+		(await d.stat(o)).isDirectory() || (o = u.dirname(o));
 	} catch {}
 	try {
-		await u.mkdir(r, { recursive: !0 });
+		await d.mkdir(o, { recursive: !0 });
 	} catch (e) {
 		if (e.code === "EPERM" || e.code === "EACCES") return {
 			success: !1,
 			requiresElevation: !0,
 			type: "copy",
-			target: r,
+			target: o,
 			sources: t,
-			summary: `Administrator permission is required to copy to "${r}".`,
-			errors: [`Permission denied creating or accessing "${r}".`]
+			summary: `Administrator permission is required to copy to "${o}".`,
+			errors: [`Permission denied creating or accessing "${o}".`]
 		};
 	}
-	let i = [], a = [];
+	let s = [], c = [];
 	for (let e = 0; e < t.length; e++) {
-		let n = t[e], o = l.basename(n);
-		E && E.webContents.send("copy-progress", {
-			line: `Copying ${o} (${e + 1}/${t.length})...`,
+		let n = t[e], r = u.basename(n);
+		H && H.webContents.send("copy-progress", {
+			line: `Copying ${r} (${e + 1}/${t.length})...`,
 			current: e + 1,
 			total: t.length,
-			fileName: o,
+			fileName: r,
 			phase: "copying"
 		});
 		try {
 			try {
-				await u.access(n);
+				await d.access(n);
 			} catch {
-				throw Error(`Source "${o}" does not exist or cannot be accessed.`);
+				throw Error(`Source "${r}" does not exist or cannot be accessed.`);
 			}
-			let e = P(l.dirname(l.resolve(n)), r), t = await I(r, o, e);
-			await z(n, t), i.push({
+			let e = K(u.dirname(u.resolve(n)), o), t = await J(o, r, e);
+			await Ge(n, t), s.push({
 				src: n,
 				dest: t,
-				name: l.basename(t),
+				name: u.basename(t),
 				success: !0
 			});
 		} catch (e) {
-			let t = F(e, n);
-			a.push(t), i.push({
+			let t = q(e, n);
+			c.push(t), s.push({
 				src: n,
-				name: o,
+				name: r,
 				success: !1,
 				error: t
-			}), console.error(`Error copying ${n} to ${r}:`, e);
+			}), console.error(`Error copying ${n} to ${o}:`, e);
 		}
 	}
-	let o = i.filter((e) => e.success).length, s = i.filter((e) => !e.success).length, c = "";
-	if (s === 0) c = o === 1 ? `Successfully copied "${i[0]?.name}"` : `Successfully copied ${o} items`, E && E.webContents.send("copy-progress", {
-		line: c,
+	let l = s.filter((e) => e.success).length, f = s.filter((e) => !e.success).length, p = "";
+	if (f === 0) p = l === 1 ? `Successfully copied "${s[0]?.name}"` : `Successfully copied ${l} items`, H && H.webContents.send("copy-progress", {
+		line: p,
 		phase: "complete",
 		success: !0
 	});
-	else if (o === 0) {
-		if (c = `Failed to copy ${t.length === 1 ? `"${l.basename(t[0])}"` : `${t.length} items`}: ${a[0]}`, E && E.webContents.send("copy-progress", {
-			line: c,
+	else if (l === 0) {
+		if (p = `Failed to copy ${t.length === 1 ? `"${u.basename(t[0])}"` : `${t.length} items`}: ${c[0]}`, H && H.webContents.send("copy-progress", {
+			line: p,
 			phase: "failed",
 			success: !1,
-			errors: a
-		}), a.some((e) => e.includes("Permission denied") || e.includes("administrator"))) return {
+			errors: c
+		}), c.some((e) => e.includes("Permission denied") || e.includes("administrator"))) return {
 			success: !1,
 			requiresElevation: !0,
 			type: "copy",
-			target: r,
+			target: o,
 			sources: t,
-			summary: `Administrator permission is required to copy to "${r}".`,
-			errors: a
+			summary: `Administrator permission is required to copy to "${o}".`,
+			errors: c
 		};
-		throw Error(c);
-	} else c = `Copied ${o} of ${t.length} items (${s} failed).`, E && E.webContents.send("copy-progress", {
-		line: c,
+		throw Error(p);
+	} else p = `Copied ${l} of ${t.length} items (${f} failed).`, H && H.webContents.send("copy-progress", {
+		line: p,
 		phase: "partial",
 		success: !1,
-		errors: a
+		errors: c
 	});
 	return {
-		success: s === 0,
+		success: f === 0,
 		type: "copy",
-		target: r,
-		items: i,
-		summary: c,
-		errors: a
+		target: o,
+		items: s,
+		summary: p,
+		errors: c
 	};
-}), U("move-files", async (e, { sources: t, target: n }) => {
-	let r = N(n);
+}), X("move-files", async (e, { sources: t, target: n }) => {
+	let r = y(n), i = t.filter((e) => y(e)), a = t.filter((e) => !y(e));
+	if (r || i.length > 0) {
+		if (r && a.length > 0 && i.length === 0) return z(a, n, !0, Y, Z);
+		if (!r && i.length > 0 && a.length === 0) return B(i, G(n), !0, J, Z);
+		if (r && i.length > 0 && a.length === 0) return V(i, n, !0, Z);
+		let e = [], t = [];
+		if (a.length > 0 && r) {
+			let r = await z(a, n, !0, Y, Z);
+			e.push(...r.items || []), t.push(...r.errors || []);
+		}
+		if (i.length > 0) {
+			let a = r ? await V(i, n, !0, Z) : await B(i, G(n), !0, J, Z);
+			e.push(...a.items || []), t.push(...a.errors || []);
+		}
+		return {
+			success: t.length === 0,
+			type: "move",
+			target: n,
+			items: e,
+			summary: t.length === 0 ? `Moved ${e.length} items` : t[0],
+			errors: t
+		};
+	}
+	let o = G(n);
 	try {
-		(await u.stat(r)).isDirectory() || (r = l.dirname(r));
+		(await d.stat(o)).isDirectory() || (o = u.dirname(o));
 	} catch {}
 	try {
-		await u.mkdir(r, { recursive: !0 });
+		await d.mkdir(o, { recursive: !0 });
 	} catch (e) {
 		if (e.code === "EPERM" || e.code === "EACCES") return {
 			success: !1,
 			requiresElevation: !0,
 			type: "move",
-			target: r,
+			target: o,
 			sources: t,
-			summary: `Administrator permission is required to move to "${r}".`,
-			errors: [`Permission denied creating or accessing "${r}".`]
+			summary: `Administrator permission is required to move to "${o}".`,
+			errors: [`Permission denied creating or accessing "${o}".`]
 		};
 	}
-	let i = [], a = [];
+	let s = [], c = [];
 	for (let e = 0; e < t.length; e++) {
-		let n = t[e], o = l.basename(n);
-		E && E.webContents.send("copy-progress", {
-			line: `Moving ${o} (${e + 1}/${t.length})...`,
+		let n = t[e], r = u.basename(n);
+		H && H.webContents.send("copy-progress", {
+			line: `Moving ${r} (${e + 1}/${t.length})...`,
 			current: e + 1,
 			total: t.length,
-			fileName: o,
+			fileName: r,
 			phase: "moving"
 		});
 		try {
 			try {
-				await u.access(n);
+				await d.access(n);
 			} catch {
-				throw Error(`Source "${o}" does not exist or cannot be accessed.`);
+				throw Error(`Source "${r}" does not exist or cannot be accessed.`);
 			}
-			if (P(l.dirname(l.resolve(n)), r)) {
-				i.push({
+			if (K(u.dirname(u.resolve(n)), o)) {
+				s.push({
 					src: n,
 					dest: n,
-					name: o,
+					name: r,
 					success: !0
 				});
 				continue;
 			}
-			let e = await I(r, o, !1), t = !1;
+			let e = await J(o, r, !1), t = !1;
 			try {
-				await u.rename(n, e), t = !0;
+				await d.rename(n, e), t = !0;
 			} catch (r) {
-				if (r.code === "EXDEV" || r.code === "EPERM" || r.code === "EBUSY") await z(n, e), await B(n), t = !0;
+				if (r.code === "EXDEV" || r.code === "EPERM" || r.code === "EBUSY") await Ge(n, e), await Y(n), t = !0;
 				else throw r;
 			}
-			t && i.push({
+			t && s.push({
 				src: n,
 				dest: e,
-				name: l.basename(e),
+				name: u.basename(e),
 				success: !0
 			});
 		} catch (e) {
-			let t = F(e, n);
-			a.push(t), i.push({
+			let t = q(e, n);
+			c.push(t), s.push({
 				src: n,
-				name: o,
+				name: r,
 				success: !1,
 				error: t
-			}), console.error(`Error moving ${n} to ${r}:`, e);
+			}), console.error(`Error moving ${n} to ${o}:`, e);
 		}
 	}
-	let o = i.filter((e) => e.success).length, s = i.filter((e) => !e.success).length, c = "";
-	if (s === 0) c = o === 1 ? `Successfully moved "${i[0]?.name}"` : `Successfully moved ${o} items`, E && E.webContents.send("copy-progress", {
-		line: c,
+	let l = s.filter((e) => e.success).length, f = s.filter((e) => !e.success).length, p = "";
+	if (f === 0) p = l === 1 ? `Successfully moved "${s[0]?.name}"` : `Successfully moved ${l} items`, H && H.webContents.send("copy-progress", {
+		line: p,
 		phase: "complete",
 		success: !0
 	});
-	else if (o === 0) {
-		if (c = `Failed to move ${t.length === 1 ? `"${l.basename(t[0])}"` : `${t.length} items`}: ${a[0]}`, E && E.webContents.send("copy-progress", {
-			line: c,
+	else if (l === 0) {
+		if (p = `Failed to move ${t.length === 1 ? `"${u.basename(t[0])}"` : `${t.length} items`}: ${c[0]}`, H && H.webContents.send("copy-progress", {
+			line: p,
 			phase: "failed",
 			success: !1,
-			errors: a
-		}), a.some((e) => e.includes("Permission denied") || e.includes("administrator"))) return {
+			errors: c
+		}), c.some((e) => e.includes("Permission denied") || e.includes("administrator"))) return {
 			success: !1,
 			requiresElevation: !0,
 			type: "move",
-			target: r,
+			target: o,
 			sources: t,
-			summary: `Administrator permission is required to move to "${r}".`,
-			errors: a
+			summary: `Administrator permission is required to move to "${o}".`,
+			errors: c
 		};
-		throw Error(c);
-	} else c = `Moved ${o} of ${t.length} items (${s} failed).`, E && E.webContents.send("copy-progress", {
-		line: c,
+		throw Error(p);
+	} else p = `Moved ${l} of ${t.length} items (${f} failed).`, H && H.webContents.send("copy-progress", {
+		line: p,
 		phase: "partial",
 		success: !1,
-		errors: a
+		errors: c
 	});
 	return {
-		success: s === 0,
+		success: f === 0,
 		type: "move",
-		target: r,
-		items: i,
-		summary: c,
-		errors: a
+		target: o,
+		items: s,
+		summary: p,
+		errors: c
 	};
-}), U("create-folder", async (e, t) => {
+}), X("create-folder", async (e, t) => {
+	if (y(t)) return Te(t);
 	try {
-		return await V(t);
+		return await Ke(t);
 	} catch (e) {
 		if (console.error("create-folder failed for", t, e), e.code === "EPERM" || e.code === "EACCES") return {
 			success: !1,
@@ -742,16 +1695,114 @@ r.handle("perform-elevated-op", async (e, t) => H(t)), U("copy-files", async (e,
 		};
 		throw e;
 	}
+}), X("delete-items", async (e, { paths: t, permanent: n }) => {
+	if (!Array.isArray(t) || t.length === 0) return {
+		success: !1,
+		items: [],
+		summary: "No items selected.",
+		errors: ["No items selected."]
+	};
+	let r = t.filter((e) => y(e)), i = t.filter((e) => !y(e)), a = [], o = [];
+	if (r.length > 0) {
+		let e = await De(r);
+		a.push(...e.items), o.push(...e.errors);
+	}
+	for (let e of i) {
+		let t = u.basename(e) || e;
+		try {
+			await d.access(e), n ? await Y(e) : await l.trashItem(e), a.push({
+				path: e,
+				name: t,
+				success: !0
+			});
+		} catch (n) {
+			let r = q(n, e);
+			o.push(r), a.push({
+				path: e,
+				name: t,
+				success: !1,
+				error: r
+			});
+		}
+	}
+	let s = a.filter((e) => e.success).length, c = a.length - s;
+	if (s === 0 && i.length > 0 && r.length === 0 && o.some((e) => e.includes("Permission denied") || e.includes("administrator"))) return {
+		success: !1,
+		requiresElevation: !0,
+		action: "delete",
+		sources: i,
+		target: u.dirname(i[0]),
+		summary: `Administrator permission is required to delete "${u.basename(i[0])}".`,
+		errors: o
+	};
+	let f = r.length > 0 && i.length === 0 ? "Deleted" : n ? "Permanently deleted" : "Moved to Trash", p = c === 0 ? s === 1 ? `${f}: "${a[0].name}"` : `${f}: ${s} items` : `${f} ${s} of ${a.length} items (${c} failed).`;
+	return {
+		success: c === 0,
+		items: a,
+		summary: p,
+		errors: o
+	};
+}), X("rename-item", async (e, { targetPath: t, newName: n }) => {
+	if (!t || !n) return {
+		success: !1,
+		error: "Target path and new name are required."
+	};
+	if (y(t)) return Ee(t, n);
+	let r = n.trim().replace(/[\\/]/g, "");
+	if (!r || r === "." || r === "..") return {
+		success: !1,
+		error: "Invalid file or folder name."
+	};
+	let i = u.dirname(t), a = u.join(i, r);
+	if (K(t, a)) return {
+		success: !0,
+		oldPath: t,
+		newPath: a
+	};
+	try {
+		try {
+			return await d.access(a), {
+				success: !1,
+				error: `An item named "${r}" already exists.`
+			};
+		} catch {}
+		return await d.rename(t, a), {
+			success: !0,
+			oldPath: t,
+			newPath: a
+		};
+	} catch (e) {
+		return e.code === "EPERM" || e.code === "EACCES" ? {
+			success: !1,
+			requiresElevation: !0,
+			action: "rename",
+			sources: [t],
+			target: i,
+			newName: r,
+			error: "Administrator permission required to rename this item."
+		} : {
+			success: !1,
+			error: q(e, t)
+		};
+	}
+}), r.handle("remote:list-connections", async () => pe()), r.handle("remote:save-connection", async (e, t) => me(t)), r.handle("remote:delete-connection", async (e, t) => he(t)), r.handle("remote:test-connection", async (e, t) => ge(t)), r.handle("remote:connect", async (e, t) => be(t)), r.handle("remote:disconnect", async (e, t) => N(t)), r.handle("remote:select-key-file", async () => {
+	if (!H) return null;
+	let e = u.join(h.homedir(), ".ssh"), t = await n.showOpenDialog(H, {
+		title: "Select SSH Private Key File",
+		defaultPath: f.existsSync(e) ? e : h.homedir(),
+		properties: ["openFile", "showHiddenFiles"]
+	});
+	return t.canceled || t.filePaths.length === 0 ? null : t.filePaths[0];
 }), r.handle("select-folder", async () => {
-	if (!E) return null;
-	let e = await n.showOpenDialog(E, {
+	if (!H) return null;
+	let e = await n.showOpenDialog(H, {
 		properties: ["openDirectory", "createDirectory"],
 		title: "Open folder"
 	});
 	return e.canceled || e.filePaths.length === 0 ? null : e.filePaths[0];
 }), r.handle("select-files", async () => {
-	if (!E) return [];
-	let e = await n.showOpenDialog(E, {
+	if (!H) return [];
+	let e = await n.showOpenDialog(H, {
 		properties: ["openFile", "multiSelections"],
 		title: "Select files to add to collection"
 	});
@@ -760,7 +1811,7 @@ r.handle("perform-elevated-op", async (e, t) => H(t)), U("copy-files", async (e,
 	if (!Array.isArray(t)) return [];
 	let n = [];
 	for (let e of t) if (!(!e || typeof e != "string")) try {
-		let t = await u.stat(e), r = t.isDirectory(), i = l.basename(e) || e, a = r ? void 0 : l.extname(i).toLowerCase() || void 0;
+		let t = await d.stat(e), r = t.isDirectory(), i = u.basename(e) || e, a = r ? void 0 : u.extname(i).toLowerCase() || void 0;
 		n.push({
 			name: i,
 			path: e,
@@ -770,7 +1821,7 @@ r.handle("perform-elevated-op", async (e, t) => H(t)), U("copy-files", async (e,
 			ext: a
 		});
 	} catch {
-		let t = l.basename(e) || e, r = l.extname(t).toLowerCase() || void 0;
+		let t = u.basename(e) || e, r = u.extname(t).toLowerCase() || void 0;
 		n.push({
 			name: t,
 			path: e,
@@ -782,10 +1833,11 @@ r.handle("perform-elevated-op", async (e, t) => H(t)), U("copy-files", async (e,
 		});
 	}
 	return n;
-}), U("save-file-as", async (e, t) => {
-	if (!E) return { canceled: !0 };
-	try {
-		if ((await u.stat(t)).isDirectory()) return {
+}), X("save-file-as", async (e, r) => {
+	if (!H) return { canceled: !0 };
+	let i = y(r);
+	if (!i) try {
+		if ((await d.stat(r)).isDirectory()) return {
 			success: !1,
 			error: "Cannot \"Save as\" a directory. Please select a file."
 		};
@@ -795,62 +1847,67 @@ r.handle("perform-elevated-op", async (e, t) => H(t)), U("copy-files", async (e,
 			error: `Source file does not exist or cannot be accessed: ${e?.message || e}`
 		};
 	}
-	let r = l.extname(t).replace(/^\./, ""), i = [];
-	r && i.push({
-		name: `${r.toUpperCase()} File (*.${r})`,
-		extensions: [r]
-	}), i.push({
+	let a = i ? x(r) : null, o = a ? u.posix.basename(a.remotePath) : u.basename(r), s = u.extname(o).replace(/^\./, ""), c = [];
+	s && c.push({
+		name: `${s.toUpperCase()} File (*.${s})`,
+		extensions: [s]
+	}), c.push({
 		name: "All Files (*.*)",
 		extensions: ["*"]
 	});
-	let a = await n.showSaveDialog(E, {
+	let l = await n.showSaveDialog(H, {
 		title: "Save As",
-		defaultPath: t,
-		filters: i,
+		defaultPath: i ? u.join(t.getPath("downloads"), o) : r,
+		filters: c,
 		properties: ["showOverwriteConfirmation", "createDirectory"]
 	});
-	if (a.canceled || !a.filePath) return { canceled: !0 };
-	let o = a.filePath;
-	if (P(t, o)) return {
+	if (l.canceled || !l.filePath) return { canceled: !0 };
+	let f = l.filePath;
+	if (!i && K(r, f)) return {
 		success: !1,
 		error: "Destination is identical to the source file."
 	};
 	try {
-		return await u.mkdir(l.dirname(o), { recursive: !0 }), await L(t, o), {
+		return await d.mkdir(u.dirname(f), { recursive: !0 }), i ? await Ae(r, f, Z) : await Ue(r, f), {
 			success: !0,
-			sourcePath: t,
-			destPath: o,
-			destDir: l.dirname(o),
-			destFileName: l.basename(o)
+			sourcePath: r,
+			destPath: f,
+			destDir: u.dirname(f),
+			destFileName: u.basename(f)
 		};
 	} catch (e) {
-		let n = e?.message || String(e);
-		return n.includes("EPERM") || n.includes("EACCES") || n.includes("Permission denied") ? {
+		let t = e?.message || String(e);
+		return t.includes("EPERM") || t.includes("EACCES") || t.includes("Permission denied") ? {
 			success: !1,
 			requiresElevation: !0,
-			sourcePath: t,
-			destPath: o,
-			destDir: l.dirname(o),
-			destFileName: l.basename(o),
-			error: n
+			sourcePath: r,
+			destPath: f,
+			destDir: u.dirname(f),
+			destFileName: u.basename(f),
+			error: t
 		} : {
 			success: !1,
-			error: n
+			error: t
 		};
 	}
 }), r.handle("open-path", async (e, t) => {
-	await c.openPath(t);
+	if (y(t)) {
+		let e = await F(t);
+		await l.openPath(e);
+		return;
+	}
+	await l.openPath(t);
 }), r.handle("show-in-explorer", async (e, t) => {
-	c.showItemInFolder(t);
+	y(t) || l.showItemInFolder(t);
 }), r.handle("read-text-file", async (e, t) => {
 	try {
-		return (await u.stat(t)).size > 1024 * 1024 ? "[File too large to preview as text. Use \"Open with default app\".]" : await u.readFile(t, "utf8");
+		return y(t) ? await ke(t, 1024 * 1024) : (await d.stat(t)).size > 1024 * 1024 ? "[File too large to preview as text. Use \"Open with default app\".]" : await d.readFile(t, "utf8");
 	} catch {
 		return "[Unable to read file as text.]";
 	}
 }), r.handle("read-binary-file", async (e, t) => {
 	try {
-		return await u.readFile(t);
+		return await d.readFile(t);
 	} catch (e) {
 		return console.error("read-binary-file failed:", e), null;
 	}
@@ -858,8 +1915,8 @@ r.handle("perform-elevated-op", async (e, t) => H(t)), U("copy-files", async (e,
 	try {
 		if (process.platform === "win32") {
 			let e = t.replace(/"/g, "\\\"");
-			await b(n === "powershell" ? `start powershell -NoExit -Command "Set-Location -LiteralPath '${e}'"` : `start cmd /K "cd /D \\"${e}\\""`, { cwd: t });
-		} else if (process.platform === "darwin") await x("open", [
+			await Ne(n === "powershell" ? `start powershell -NoExit -Command "Set-Location -LiteralPath '${e}'"` : `start cmd /K "cd /D \\"${e}\\""`, { cwd: t });
+		} else if (process.platform === "darwin") await Pe("open", [
 			"-a",
 			"Terminal",
 			t
@@ -887,9 +1944,9 @@ r.handle("perform-elevated-op", async (e, t) => H(t)), U("copy-files", async (e,
 		console.error("Failed to open terminal", e);
 	}
 });
-async function W() {
+async function Je() {
 	let e = process.platform === "darwin" ? ["/Volumes"] : (() => {
-		let e = p.userInfo().username;
+		let e = h.userInfo().username;
 		return [
 			`/media/${e}`,
 			`/run/media/${e}`,
@@ -900,20 +1957,20 @@ async function W() {
 	for (let i of e) {
 		let e = [];
 		try {
-			e = await u.readdir(i);
+			e = await d.readdir(i);
 		} catch {
 			continue;
 		}
 		for (let a of e) {
 			if (a.startsWith(".")) continue;
-			let e = l.join(i, a);
+			let e = u.join(i, a);
 			try {
-				let i = await u.realpath(e);
+				let i = await d.realpath(e);
 				if (i === "/") {
 					process.platform === "darwin" && (t = a);
 					continue;
 				}
-				if (!(await u.stat(e)).isDirectory() || r.has(i)) continue;
+				if (!(await d.stat(e)).isDirectory() || r.has(i)) continue;
 				r.add(i), n.push({
 					name: a,
 					path: e
@@ -928,15 +1985,15 @@ async function W() {
 	}, ...n];
 	return await Promise.all(i.map(async (e) => {
 		try {
-			let t = await u.statfs(e.path);
+			let t = await d.statfs(e.path);
 			e.size = Number(t.blocks) * Number(t.bsize), e.freeSpace = Number(t.bavail) * Number(t.bsize);
 		} catch {}
 	})), i;
 }
 r.handle("get-drives", async () => {
-	if (process.platform !== "win32") return W();
+	if (process.platform !== "win32") return Je();
 	try {
-		let { stdout: e } = await b("powershell -NoProfile -Command \"@(Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID, VolumeName, Description, Size, FreeSpace) | ConvertTo-Json\""), t = JSON.parse(e || "[]"), n = (Array.isArray(t) ? t : [t]).filter((e) => e?.DeviceID && /^[A-Za-z]:/i.test(e.DeviceID)).map((e) => {
+		let { stdout: e } = await Ne("powershell -NoProfile -Command \"@(Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID, VolumeName, Description, Size, FreeSpace) | ConvertTo-Json\""), t = JSON.parse(e || "[]"), n = (Array.isArray(t) ? t : [t]).filter((e) => e?.DeviceID && /^[A-Za-z]:/i.test(e.DeviceID)).map((e) => {
 			let t = e.VolumeName && typeof e.VolumeName == "string" && e.VolumeName.trim() ? e.VolumeName.trim() : void 0;
 			return t || (e.Description === "Removable Disk" ? t = "Removable Disk" : e.Description === "Local Fixed Disk" ? t = "Local Disk" : e.Description && typeof e.Description == "string" && e.Description.trim() && (t = e.Description.trim())), {
 				name: e.DeviceID.replace(/\\$/, ""),
@@ -959,7 +2016,7 @@ r.handle("get-drives", async () => {
 		"H:\\"
 	], t = [];
 	for (let n of e) try {
-		await u.access(n);
+		await d.access(n);
 		let e = n[0];
 		t.push({
 			name: e + ":",
@@ -990,13 +2047,13 @@ r.handle("get-drives", async () => {
 		return console.error("get-default-quick-access failed", e), [];
 	}
 });
-var G = l.join(t.getPath("userData"), "thumbnails_cache");
+var Q = u.join(t.getPath("userData"), "thumbnails_cache");
 try {
-	d.mkdirSync(G, { recursive: !0 });
+	f.mkdirSync(Q, { recursive: !0 });
 } catch (e) {
 	console.error("Failed to initialize thumbnail cache dir:", e);
 }
-var K = new Set(/* @__PURE__ */ ".png,.jpg,.jpeg,.webp,.bmp,.gif,.ico,.svg,.tif,.tiff,.jfif,.avif,.mp4,.mov,.mkv,.avi,.wmv,.webm,.m4v,.flv,.pdf,.glb,.gltf,.obj,.stl,.ply,.fbx,.splat,.ksplat,.spz".split(",")), q = new Set([
+var Ye = new Set(/* @__PURE__ */ ".png,.jpg,.jpeg,.webp,.bmp,.gif,.ico,.svg,.tif,.tiff,.jfif,.avif,.mp4,.mov,.mkv,.avi,.wmv,.webm,.m4v,.flv,.pdf,.glb,.gltf,.obj,.stl,.ply,.fbx,.splat,.ksplat,.spz".split(",")), Xe = new Set([
 	".glb",
 	".gltf",
 	".obj",
@@ -1007,14 +2064,14 @@ var K = new Set(/* @__PURE__ */ ".png,.jpg,.jpeg,.webp,.bmp,.gif,.ico,.svg,.tif,
 	".ksplat",
 	".spz"
 ]);
-function J(e, t, n) {
-	let r = l.normalize(e).toLowerCase(), i = q.has(l.extname(r)) ? ":r1" : "";
-	return m.createHash("sha256").update(`${r}:${t}:${n || 0}:256${i}`).digest("hex");
+function Ze(e, t, n) {
+	let r = u.normalize(e).toLowerCase(), i = Xe.has(u.extname(r)) ? ":r1" : "";
+	return g.createHash("sha256").update(`${r}:${t}:${n || 0}:256${i}`).digest("hex");
 }
-function Y(e) {
+function $(e) {
 	return `jabro-media://localhost?path=${encodeURIComponent(e)}`;
 }
-var X = new class {
+var Qe = new class {
 	queue = [];
 	activeCount = 0;
 	maxConcurrency = 6;
@@ -1041,7 +2098,7 @@ var X = new class {
 		}
 	}
 }();
-async function Z(e, t, n) {
+async function $e(e, t, n) {
 	let r = [
 		".png",
 		".jpg",
@@ -1053,7 +2110,7 @@ async function Z(e, t, n) {
 		".jfif"
 	].includes(n);
 	try {
-		await u.mkdir(l.dirname(t), { recursive: !0 });
+		await d.mkdir(u.dirname(t), { recursive: !0 });
 	} catch {}
 	if (r) try {
 		let n = i.createFromPath(e);
@@ -1067,7 +2124,7 @@ async function Z(e, t, n) {
 					height: Math.max(1, i),
 					quality: "good"
 				}).toJPEG(82);
-				return await u.writeFile(t, a), !0;
+				return await d.writeFile(t, a), !0;
 			}
 		}
 	} catch {}
@@ -1089,27 +2146,27 @@ async function Z(e, t, n) {
 					});
 				}
 				let i = r.toJPEG(82);
-				return await u.writeFile(t, i), !0;
+				return await d.writeFile(t, i), !0;
 			}
 		}
 	} catch {}
 	return !1;
 }
 r.handle("get-thumbnail", async (e, { filePath: t, mtime: n, size: r }) => {
-	if (!t) return { hasPreview: !1 };
-	let i = l.extname(t).toLowerCase();
-	if (!K.has(i)) return { hasPreview: !1 };
+	if (!t || y(t)) return { hasPreview: !1 };
+	let i = u.extname(t).toLowerCase();
+	if (!Ye.has(i)) return { hasPreview: !1 };
 	let a = n, o = r;
 	if (!a || o === void 0 || o === 0) try {
-		let e = await u.stat(t);
+		let e = await d.stat(t);
 		a = e.mtime.toISOString(), o = e.size;
 	} catch {}
-	let s = J(t, a, o), c = l.join(G, `${s}.jpg`);
-	return d.existsSync(c) ? {
-		url: Y(c),
+	let s = Ze(t, a, o), c = u.join(Q, `${s}.jpg`);
+	return f.existsSync(c) ? {
+		url: $(c),
 		hasPreview: !0
-	} : q.has(i) ? { hasPreview: !1 } : X.enqueue(s, async () => d.existsSync(c) || await Z(t, c, i) ? {
-		url: Y(c),
+	} : Xe.has(i) ? { hasPreview: !1 } : Qe.enqueue(s, async () => f.existsSync(c) || await $e(t, c, i) ? {
+		url: $(c),
 		hasPreview: !0
 	} : { hasPreview: !1 });
 }), r.handle("get-thumbnails-batch", async (e, t) => {
@@ -1117,49 +2174,50 @@ r.handle("get-thumbnail", async (e, { filePath: t, mtime: n, size: r }) => {
 	if (!Array.isArray(t)) return n;
 	for (let e of t) {
 		if (!e?.filePath) continue;
-		let t = l.extname(e.filePath).toLowerCase();
-		if (!K.has(t)) continue;
-		let r = J(e.filePath, e.mtime, e.size), i = l.join(G, `${r}.jpg`);
-		d.existsSync(i) && (n[e.filePath] = Y(i));
+		let t = u.extname(e.filePath).toLowerCase();
+		if (!Ye.has(t)) continue;
+		let r = Ze(e.filePath, e.mtime, e.size), i = u.join(Q, `${r}.jpg`);
+		f.existsSync(i) && (n[e.filePath] = $(i));
 	}
 	return n;
 }), r.handle("read-file-snippet", async (e, t, n = 240) => {
+	if (!t || y(t)) return "";
 	try {
-		let e = await u.open(t, "r"), r = Buffer.alloc(1024), { bytesRead: i } = await e.read(r, 0, 1024, 0);
+		let e = await d.open(t, "r"), r = Buffer.alloc(1024), { bytesRead: i } = await e.read(r, 0, 1024, 0);
 		return await e.close(), r.toString("utf8", 0, i).slice(0, n);
 	} catch {
 		return "";
 	}
 }), r.handle("get-thumbnail-cache-stats", async () => {
 	try {
-		let e = await u.readdir(G), t = 0, n = 0;
+		let e = await d.readdir(Q), t = 0, n = 0;
 		for (let r of e) if (r.endsWith(".jpg") || r.endsWith(".webp")) {
 			n++;
 			try {
-				let e = await u.stat(l.join(G, r));
+				let e = await d.stat(u.join(Q, r));
 				t += e.size;
 			} catch {}
 		}
 		return {
 			count: n,
 			sizeBytes: t,
-			cachePath: G
+			cachePath: Q
 		};
 	} catch {
 		return {
 			count: 0,
 			sizeBytes: 0,
-			cachePath: G
+			cachePath: Q
 		};
 	}
 }), r.handle("clear-thumbnail-cache", async () => {
 	try {
-		let e = await u.readdir(G), t = 0, n = 0;
+		let e = await d.readdir(Q), t = 0, n = 0;
 		for (let r of e) if (r.endsWith(".jpg") || r.endsWith(".webp")) {
-			let e = l.join(G, r);
+			let e = u.join(Q, r);
 			try {
-				let r = await u.stat(e);
-				t += r.size, await u.unlink(e), n++;
+				let r = await d.stat(e);
+				t += r.size, await d.unlink(e), n++;
 			} catch {}
 		}
 		return {
@@ -1176,7 +2234,7 @@ r.handle("get-thumbnail", async (e, { filePath: t, mtime: n, size: r }) => {
 	}
 }), r.handle("open-thumbnail-cache-folder", async () => {
 	try {
-		await c.openPath(G);
+		await l.openPath(Q);
 	} catch (e) {
 		console.error("Failed to open thumbnail cache folder:", e);
 	}
@@ -1185,13 +2243,13 @@ r.handle("get-thumbnail", async (e, { filePath: t, mtime: n, size: r }) => {
 		if (!t || !n) return !1;
 		let e = n.replace(/^data:image\/\w+;base64,/, ""), o = Buffer.from(e, "base64"), s = r, c = a;
 		if (!s || c == null) try {
-			let e = await u.stat(t);
+			let e = await d.stat(t);
 			s = e.mtime.toISOString(), c = e.size;
 		} catch {
 			s = (/* @__PURE__ */ new Date()).toISOString(), c = 0;
 		}
-		let d = J(t, s, c), f = l.join(G, `${d}.jpg`);
-		await u.mkdir(l.dirname(f), { recursive: !0 });
+		let l = Ze(t, s, c), f = u.join(Q, `${l}.jpg`);
+		await d.mkdir(u.dirname(f), { recursive: !0 });
 		let p = i.createFromBuffer(o);
 		if (p.isEmpty()) return !1;
 		let m = p.getSize(), h = p;
@@ -1209,7 +2267,7 @@ r.handle("get-thumbnail", async (e, { filePath: t, mtime: n, size: r }) => {
 			height: 256,
 			quality: "best"
 		}).toJPEG(85);
-		return await u.writeFile(f, g), !0;
+		return await d.writeFile(f, g), !0;
 	} catch (e) {
 		return console.error("save-thumbnail-cache failed:", e), !1;
 	}

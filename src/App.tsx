@@ -7,7 +7,8 @@ import {
   Plus, ChevronRight, ChevronLeft, LayoutGrid, List, Flame, Edit3, ExternalLink, Eye, PieChart,
   Database, Trash2, PanelLeft, PanelLeftClose, PanelLeftOpen, Save,
   Columns2, Link2, Layers, Image, Video, Music, FileCode,
-  Bookmark, BookmarkCheck, BookmarkPlus, Tag, FolderPlus
+  Bookmark, BookmarkCheck, BookmarkPlus, Tag, FolderPlus,
+  Server, KeyRound, Lock, Unplug, PlugZap
 } from 'lucide-react';
 import { ThreeViewer } from './components/ThreeViewer';
 import { PdfViewer } from './components/PdfViewer';
@@ -17,8 +18,27 @@ import { BackgroundPdfSnapshotGenerator } from './components/BackgroundPdfSnapsh
 import {
   HOME_DIR, IS_WIN, IS_MAC, MOD_KEY, COPY_MOD_LABEL, FILE_MANAGER_NAME, isCopyModifier,
   baseName, dirName, normalizeDirPath, parentPath, isAbsolutePath, pathsEqual,
-  isSameOrInside, volumeKey, pathBreadcrumbs,
+  isSameOrInside, volumeKey, pathBreadcrumbs, isRemotePath, parseRemoteUri, buildRemoteUri,
+  type RemoteProtocol,
 } from './utils/paths';
+
+export interface RemoteConnectionInfo {
+  id: string;
+  name: string;
+  protocol: RemoteProtocol;
+  host: string;
+  port: number;
+  username: string;
+  authType: 'password' | 'privateKey' | 'agent';
+  privateKeyPath?: string;
+  initialPath?: string;
+  rejectUnauthorized?: boolean;
+  hasPassword: boolean;
+  hasPassphrase: boolean;
+  connected: boolean;
+  lastError?: string;
+  createdAt: string;
+}
 
 export interface Collection {
   id: string;
@@ -175,16 +195,28 @@ function matchesSearch(name: string, search: string): boolean {
   });
 }
 
-function getTabTitle(p: string, collections?: Collection[]): string {
+function getTabTitle(p: string, collections?: Collection[], remoteConnections?: RemoteConnectionInfo[]): string {
   if (p.startsWith('collection:')) {
     const colId = p.slice('collection:'.length);
     const col = collections?.find(c => c.id === colId);
     return col ? col.name : 'Collection';
   }
+  const remote = parseRemoteUri(p);
+  if (remote) {
+    const conn = remoteConnections?.find(c => c.id === remote.connectionId);
+    if (remote.remotePath === '/') {
+      return conn ? `${conn.name} (/)` : `${remote.protocol.toUpperCase()} /`;
+    }
+    return baseName(p);
+  }
   return baseName(p);
 }
 
-function parseBreadcrumbs(pathStr: string, collections?: Collection[]): Array<{ name: string; fullPath: string; isCollectionRoot?: boolean; isCollection?: boolean }> {
+function parseBreadcrumbs(
+  pathStr: string,
+  collections?: Collection[],
+  remoteConnections?: RemoteConnectionInfo[]
+): Array<{ name: string; fullPath: string; isCollectionRoot?: boolean; isCollection?: boolean; isRemoteRoot?: boolean }> {
   if (pathStr.startsWith('collection:')) {
     const colId = pathStr.slice('collection:'.length);
     const col = collections?.find(c => c.id === colId);
@@ -192,6 +224,13 @@ function parseBreadcrumbs(pathStr: string, collections?: Collection[]): Array<{ 
       { name: 'Collections', fullPath: 'collection:', isCollectionRoot: true },
       { name: col?.name || 'Virtual Collection', fullPath: pathStr, isCollection: true },
     ];
+  }
+  const remote = parseRemoteUri(pathStr);
+  if (remote) {
+    const conn = remoteConnections?.find(c => c.id === remote.connectionId);
+    const rootLabel = conn ? `${conn.name} (${conn.protocol.toUpperCase()})` : `${remote.protocol.toUpperCase()} /`;
+    const crumbs = pathBreadcrumbs(pathStr, rootLabel);
+    return crumbs.map((c, idx) => (idx === 0 ? { ...c, isRemoteRoot: true } : c));
   }
   return pathBreadcrumbs(pathStr);
 }
@@ -575,11 +614,76 @@ export default function App() {
     sources: string[];
     target: string;
     isMove: boolean;
-    action?: 'copy' | 'move' | 'createFolder';
+    action?: 'copy' | 'move' | 'createFolder' | 'delete' | 'rename';
     newFolderName?: string;
     customDestFileName?: string;
+    newName?: string;
   } | null>(null);
   const [isElevating, setIsElevating] = useState(false);
+
+  // Delete confirmation modal state
+  const [deleteConfirm, setDeleteConfirm] = useState<{
+    entries: DirEntry[];
+    permanent: boolean;
+  } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  // Rename modal state
+  const [renameModal, setRenameModal] = useState<{
+    entry: DirEntry;
+    newName: string;
+  } | null>(null);
+  const [isRenaming, setIsRenaming] = useState(false);
+
+  // Remote FTP / FTPS / SFTP state
+  const [remoteConnections, setRemoteConnections] = useState<RemoteConnectionInfo[]>([]);
+  const [connectingRemoteId, setConnectingRemoteId] = useState<string | null>(null);
+  const [remoteCtx, setRemoteCtx] = useState<{
+    x: number;
+    y: number;
+    connection: RemoteConnectionInfo;
+  } | null>(null);
+  const remoteMenuRef = useRef<HTMLDivElement>(null);
+  const [remoteModal, setRemoteModal] = useState<{
+    isOpen: boolean;
+    mode: 'create' | 'edit';
+    id?: string;
+    name: string;
+    protocol: RemoteProtocol;
+    host: string;
+    port: string;
+    username: string;
+    authType: 'password' | 'privateKey' | 'agent';
+    password: string;
+    privateKeyPath: string;
+    passphrase: string;
+    initialPath: string;
+    rejectUnauthorized: boolean;
+    hasExistingPassword: boolean;
+    hasExistingPassphrase: boolean;
+    testing: boolean;
+    saving: boolean;
+    testResult: { success: boolean; message: string } | null;
+  }>({
+    isOpen: false,
+    mode: 'create',
+    name: '',
+    protocol: 'sftp',
+    host: '',
+    port: '22',
+    username: '',
+    authType: 'password',
+    password: '',
+    privateKeyPath: '',
+    passphrase: '',
+    initialPath: '/',
+    rejectUnauthorized: false,
+    hasExistingPassword: false,
+    hasExistingPassphrase: false,
+    testing: false,
+    saving: false,
+    testResult: null,
+  });
 
   const showToast = useCallback((toast: Omit<ToastInfo, 'id'>, duration = 3200) => {
     const id = Math.random().toString(36).slice(2);
@@ -682,9 +786,19 @@ export default function App() {
   const [rightHistoryIndex, setRightHistoryIndex] = useState(0);
   const [activePane, setActivePane] = useState<'left' | 'right'>('left');
 
+  const refreshRemoteConnections = useCallback(async () => {
+    if (api?.remoteListConnections) {
+      try {
+        const list = await api.remoteListConnections();
+        setRemoteConnections(list || []);
+      } catch {}
+    }
+  }, []);
+
   // Load directory contents
   const loadDirectory = useCallback(async (path: string) => {
     const isCollection = path.startsWith('collection:');
+    const isRemote = isRemotePath(path);
     const normalized = isCollection ? path : normalizeDirPath(path);
     if (leftLoadingRef.current === normalized) return;
     leftLoadingRef.current = normalized;
@@ -733,9 +847,10 @@ export default function App() {
 
       setEntries(merged);
       setCurrentPath(normalized);
+      if (isRemote) refreshRemoteConnections();
 
-      // Auto-trigger size calculation for folders without known size
-      if (autoCalc) {
+      // Auto-trigger size calculation for local folders without known size
+      if (autoCalc && !isRemote) {
         setTimeout(() => {
           // Only if still the current load
           if (myToken === leftLoadTokenRef.current) {
@@ -746,10 +861,18 @@ export default function App() {
           }
         }, 80);
       }
-    } catch (err) {
+    } catch (err: any) {
       if (myToken === leftLoadTokenRef.current) {
         console.error('Failed to list directory', err);
         if (!cached) setEntries([]);
+        if (isRemote) {
+          refreshRemoteConnections();
+          showToast({
+            type: 'error',
+            title: 'Remote folder error',
+            message: (err?.message || String(err)).replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, ''),
+          });
+        }
       }
     } finally {
       if (myToken === leftLoadTokenRef.current) {
@@ -757,11 +880,12 @@ export default function App() {
         setIsLoading(false);
       }
     }
-  }, [sizeCache, autoCalc]);
+  }, [sizeCache, autoCalc, refreshRemoteConnections, showToast]);
 
   // Load for right pane (duplicated for dual pane support)
   const loadRightDirectory = useCallback(async (path: string) => {
     const isCollection = path.startsWith('collection:');
+    const isRemote = isRemotePath(path);
     const normalized = isCollection ? path : normalizeDirPath(path);
     if (rightLoadingRef.current === normalized) return;
     rightLoadingRef.current = normalized;
@@ -805,17 +929,26 @@ export default function App() {
       });
       setRightEntries(merged);
       setRightCurrentPath(normalized);
-      if (autoCalc) {
+      if (isRemote) refreshRemoteConnections();
+      if (autoCalc && !isRemote) {
         setTimeout(() => {
           if (myToken === rightLoadTokenRef.current) {
             merged.filter(e => e.isDirectory && !sizeCache[e.path]).slice(0, 8).forEach(e => calculateFolderSize(e.path));
           }
         }, 80);
       }
-    } catch (err) {
+    } catch (err: any) {
       if (myToken === rightLoadTokenRef.current) {
         console.error('Failed to list right directory', err);
         if (!cached) setRightEntries([]);
+        if (isRemote) {
+          refreshRemoteConnections();
+          showToast({
+            type: 'error',
+            title: 'Remote folder error',
+            message: (err?.message || String(err)).replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, ''),
+          });
+        }
       }
     } finally {
       if (myToken === rightLoadTokenRef.current) {
@@ -823,13 +956,14 @@ export default function App() {
         setIsRightLoading(false);
       }
     }
-  }, [sizeCache, autoCalc]);
+  }, [sizeCache, autoCalc, refreshRemoteConnections, showToast]);
 
-  // Initial + drive load
+  // Initial + drive + remote connection load
 
   useEffect(() => {
     loadDirectory(currentPath);
     loadRightDirectory(rightCurrentPath);
+    refreshRemoteConnections();
 
     if (api?.getDrives) {
       api.getDrives().then((d: DriveInfo[]) => setDrives(d)).catch(() => {
@@ -1247,7 +1381,7 @@ export default function App() {
         const text = await navigator.clipboard.readText();
         if (text) {
           const lines = text.split(/\r?\n/).map(l => l.trim().replace(/^["']|["']$/g, '')).filter(Boolean);
-          const valid = lines.filter(l => isAbsolutePath(l));
+          const valid = lines.filter(l => isAbsolutePath(l) || isRemotePath(l));
           if (valid.length > 0) {
             pathsToPaste = valid;
             isCut = false;
@@ -1498,7 +1632,8 @@ export default function App() {
         elevationPrompt.isMove,
         elevationPrompt.action,
         elevationPrompt.newFolderName,
-        elevationPrompt.customDestFileName
+        elevationPrompt.customDestFileName,
+        elevationPrompt.newName
       );
 
       setIsElevating(false);
@@ -1514,11 +1649,13 @@ export default function App() {
       }
 
       if (res?.success) {
-        if (elevationPrompt.isMove) {
+        if (elevationPrompt.isMove || elevationPrompt.action === 'delete') {
           setClipboard(null);
         }
 
         // Refresh active and target panes
+        dirCacheRef.current.delete(currentPath);
+        if (dualPane) dirCacheRef.current.delete(rightCurrentPath);
         await activeRefresh();
         if (dualPane) {
           if (activePaneIsRight) await loadDirectory(currentPath);
@@ -1526,7 +1663,7 @@ export default function App() {
         }
 
         const created = res.items?.find((i: any) => i.success);
-        if (created?.dest) {
+        if (created?.dest && elevationPrompt.action !== 'delete') {
           setHighlightedPath(created.dest);
           if (activePaneIsRight) setRightSelected(created.dest);
           else setSelected(created.dest);
@@ -1535,16 +1672,26 @@ export default function App() {
 
         const targetFolderDisplay = baseName(elevationPrompt.target);
         const isFolder = elevationPrompt.action === 'createFolder';
+        const isDelete = elevationPrompt.action === 'delete';
+        const isRename = elevationPrompt.action === 'rename';
         showToast({
           type: 'success',
           title: isFolder
             ? 'Folder created'
-            : (elevationPrompt.isMove ? 'Moved successfully' : 'Copied successfully'),
+            : isDelete
+              ? 'Deleted successfully'
+              : isRename
+                ? 'Renamed successfully'
+                : (elevationPrompt.isMove ? 'Moved successfully' : 'Copied successfully'),
           message: isFolder
             ? `New folder created in ${targetFolderDisplay}`
-            : (elevationPrompt.sources.length === 1
-                ? `"${created?.name || 'Item'}" placed in ${targetFolderDisplay}`
-                : `${res.items?.length || elevationPrompt.sources.length} items placed in ${targetFolderDisplay}`)
+            : isDelete
+              ? `Deleted ${res.items?.length || elevationPrompt.sources.length} item(s)`
+              : isRename
+                ? `Renamed to "${elevationPrompt.newName}"`
+                : (elevationPrompt.sources.length === 1
+                    ? `"${created?.name || 'Item'}" placed in ${targetFolderDisplay}`
+                    : `${res.items?.length || elevationPrompt.sources.length} items placed in ${targetFolderDisplay}`)
         });
       } else {
         showToast({
@@ -1575,6 +1722,345 @@ export default function App() {
     }
   }, [elevationPrompt, activeRefresh, dualPane, activePaneIsRight, currentPath, rightCurrentPath, loadDirectory, loadRightDirectory, showToast]);
 
+  // Delete & Rename handlers
+  const requestDelete = useCallback((targetEntries: DirEntry[], permanent = false) => {
+    const valid = targetEntries.filter(Boolean);
+    if (valid.length === 0) return;
+    const allRemote = valid.every(e => isRemotePath(e.path));
+    setDeleteConfirm({
+      entries: valid,
+      permanent: allRemote ? true : permanent,
+    });
+  }, []);
+
+  const confirmDelete = useCallback(async () => {
+    if (!deleteConfirm || deleteConfirm.entries.length === 0) return;
+    const targets = deleteConfirm.entries;
+    const paths = targets.map(e => e.path);
+    const permanent = deleteConfirm.permanent;
+    setIsDeleting(true);
+
+    try {
+      const res = await api.deleteItems(paths, permanent);
+      setIsDeleting(false);
+      setDeleteConfirm(null);
+
+      if (res?.requiresElevation) {
+        setElevationPrompt({
+          sources: res.sources || paths,
+          target: res.target || dirName(paths[0]) || paths[0],
+          isMove: false,
+          action: 'delete',
+        });
+        return;
+      }
+
+      if (selected && paths.some(p => pathsEqual(p, selected))) setSelected(null);
+      if (rightSelected && paths.some(p => pathsEqual(p, rightSelected))) setRightSelected(null);
+      if (clipboard && clipboard.paths.some(cp => paths.some(p => pathsEqual(p, cp)))) {
+        setClipboard(null);
+      }
+
+      // Invalidate cache & refresh affected panes
+      for (const p of paths) {
+        const parent = dirName(p);
+        if (parent) dirCacheRef.current.delete(normalizeDirPath(parent));
+      }
+      dirCacheRef.current.delete(currentPath);
+      await loadDirectory(currentPath);
+      if (dualPane) {
+        dirCacheRef.current.delete(rightCurrentPath);
+        await loadRightDirectory(rightCurrentPath);
+      }
+
+      if (res?.success) {
+        showToast({
+          type: 'success',
+          title: targets.every(e => isRemotePath(e.path))
+            ? 'Deleted from server'
+            : (permanent ? 'Permanently deleted' : 'Moved to Trash'),
+          message: res.summary,
+        });
+      } else {
+        showToast({
+          type: 'error',
+          title: 'Delete failed',
+          message: res?.errors?.[0] || res?.summary || 'Failed to delete item(s).',
+          details: res?.errors?.join('\n'),
+        });
+      }
+    } catch (err: any) {
+      setIsDeleting(false);
+      setDeleteConfirm(null);
+      const errMsg = err?.message || String(err);
+      showToast({
+        type: 'error',
+        title: 'Delete failed',
+        message: errMsg.replace(/^Error:\s*/, ''),
+        details: err?.stack || errMsg,
+      });
+    }
+  }, [deleteConfirm, selected, rightSelected, clipboard, currentPath, rightCurrentPath, dualPane, loadDirectory, loadRightDirectory, showToast]);
+
+  const requestRename = useCallback((entry: DirEntry) => {
+    setRenameModal({ entry, newName: entry.name });
+  }, []);
+
+  const confirmRename = useCallback(async () => {
+    if (!renameModal) return;
+    const trimmed = renameModal.newName.trim();
+    if (!trimmed) {
+      showToast({ type: 'error', title: 'Name required', message: 'Please enter a valid name.' });
+      return;
+    }
+    if (trimmed === renameModal.entry.name) {
+      setRenameModal(null);
+      return;
+    }
+    setIsRenaming(true);
+    try {
+      const res = await api.renameItem(renameModal.entry.path, trimmed);
+      setIsRenaming(false);
+
+      if (res?.requiresElevation) {
+        setRenameModal(null);
+        setElevationPrompt({
+          sources: res.sources || [renameModal.entry.path],
+          target: res.target || dirName(renameModal.entry.path),
+          isMove: false,
+          action: 'rename',
+          newName: trimmed,
+        });
+        return;
+      }
+
+      if (res?.success) {
+        const newPath = res.newPath;
+        setRenameModal(null);
+        const parent = dirName(renameModal.entry.path);
+        if (parent) dirCacheRef.current.delete(normalizeDirPath(parent));
+        dirCacheRef.current.delete(currentPath);
+        await loadDirectory(currentPath);
+        if (dualPane) {
+          dirCacheRef.current.delete(rightCurrentPath);
+          await loadRightDirectory(rightCurrentPath);
+        }
+        if (newPath) {
+          setHighlightedPath(newPath);
+          if (activePaneIsRight) setRightSelected(newPath);
+          else setSelected(newPath);
+          setTimeout(() => setHighlightedPath(null), 2500);
+        }
+        showToast({ type: 'success', title: 'Renamed', message: `"${renameModal.entry.name}" → "${trimmed}"` });
+      } else {
+        showToast({ type: 'error', title: 'Rename failed', message: res?.error || 'Could not rename item.' });
+      }
+    } catch (err: any) {
+      setIsRenaming(false);
+      showToast({ type: 'error', title: 'Rename failed', message: err?.message || String(err) });
+    }
+  }, [renameModal, currentPath, rightCurrentPath, dualPane, activePaneIsRight, loadDirectory, loadRightDirectory, showToast]);
+
+  // Remote FTP / FTPS / SFTP actions
+  const openRemoteModalForCreate = useCallback((prefill?: Partial<{ protocol: RemoteProtocol; host: string; port: string; username: string; initialPath: string }>) => {
+    const proto = prefill?.protocol || 'sftp';
+    setRemoteModal({
+      isOpen: true,
+      mode: 'create',
+      name: prefill?.host || '',
+      protocol: proto,
+      host: prefill?.host || '',
+      port: prefill?.port || (proto === 'sftp' ? '22' : '21'),
+      username: prefill?.username || '',
+      authType: 'password',
+      password: '',
+      privateKeyPath: '',
+      passphrase: '',
+      initialPath: prefill?.initialPath || '/',
+      rejectUnauthorized: false,
+      hasExistingPassword: false,
+      hasExistingPassphrase: false,
+      testing: false,
+      saving: false,
+      testResult: null,
+    });
+  }, []);
+
+  const openRemoteModalForEdit = useCallback((conn: RemoteConnectionInfo) => {
+    setRemoteModal({
+      isOpen: true,
+      mode: 'edit',
+      id: conn.id,
+      name: conn.name,
+      protocol: conn.protocol,
+      host: conn.host,
+      port: String(conn.port),
+      username: conn.username,
+      authType: conn.authType || 'password',
+      password: '',
+      privateKeyPath: conn.privateKeyPath || '',
+      passphrase: '',
+      initialPath: conn.initialPath || '/',
+      rejectUnauthorized: Boolean(conn.rejectUnauthorized),
+      hasExistingPassword: conn.hasPassword,
+      hasExistingPassphrase: conn.hasPassphrase,
+      testing: false,
+      saving: false,
+      testResult: null,
+    });
+  }, []);
+
+  const connectAndNavigateToRemote = useCallback(async (conn: RemoteConnectionInfo, targetPane?: 'left' | 'right') => {
+    if (!api?.remoteConnect) return;
+    setConnectingRemoteId(conn.id);
+    const toastId = showToast({
+      type: 'loading',
+      title: `Connecting to ${conn.name}...`,
+      message: `${conn.protocol.toUpperCase()}://${conn.username ? conn.username + '@' : ''}${conn.host}:${conn.port}`,
+    }, 0);
+
+    try {
+      const res = await api.remoteConnect(conn.id);
+      dismissToast(toastId);
+      await refreshRemoteConnections();
+      if (res?.success && res.initialUri) {
+        if (targetPane === 'right') {
+          if (!dualPane) setDualPane(true);
+          setSplitMode('independent');
+          setActivePane('right');
+          navigateRight(res.initialUri);
+        } else if (targetPane === 'left') {
+          setActivePane('left');
+          navigateTo(res.initialUri);
+        } else {
+          activeNavigate(res.initialUri);
+        }
+        showToast({
+          type: 'success',
+          title: `Connected to ${conn.name}`,
+          message: `Opened ${parseRemoteUri(res.initialUri)?.remotePath || '/'}`,
+        });
+      } else {
+        showToast({
+          type: 'error',
+          title: `Connection failed (${conn.name})`,
+          message: res?.error || 'Could not connect to server.',
+        });
+      }
+    } catch (err: any) {
+      dismissToast(toastId);
+      await refreshRemoteConnections();
+      showToast({
+        type: 'error',
+        title: `Connection failed (${conn.name})`,
+        message: err?.message || String(err),
+      });
+    } finally {
+      setConnectingRemoteId(null);
+    }
+  }, [dualPane, activeNavigate, navigateTo, navigateRight, refreshRemoteConnections, showToast, dismissToast]);
+
+  const disconnectRemoteServer = useCallback(async (conn: RemoteConnectionInfo) => {
+    if (!api?.remoteDisconnect) return;
+    await api.remoteDisconnect(conn.id);
+    await refreshRemoteConnections();
+    showToast({
+      type: 'info',
+      title: 'Disconnected',
+      message: `Closed session for "${conn.name}".`,
+    });
+  }, [refreshRemoteConnections, showToast]);
+
+  const deleteRemoteServer = useCallback(async (conn: RemoteConnectionInfo) => {
+    if (!api?.remoteDeleteConnection) return;
+    await api.remoteDeleteConnection(conn.id);
+    await refreshRemoteConnections();
+    if (parseRemoteUri(currentPath)?.connectionId === conn.id) {
+      navigateTo(HOME_DIR);
+    }
+    if (dualPane && parseRemoteUri(rightCurrentPath)?.connectionId === conn.id) {
+      navigateRight(HOME_DIR);
+    }
+    showToast({
+      type: 'info',
+      title: 'Server removed',
+      message: `Removed "${conn.name}" from saved servers.`,
+    });
+  }, [currentPath, rightCurrentPath, dualPane, navigateTo, navigateRight, refreshRemoteConnections, showToast]);
+
+  const testRemoteConnectionModal = useCallback(async () => {
+    if (!api?.remoteTestConnection) return;
+    setRemoteModal(prev => ({ ...prev, testing: true, testResult: null }));
+    try {
+      const res = await api.remoteTestConnection({
+        id: remoteModal.id,
+        name: remoteModal.name || remoteModal.host,
+        protocol: remoteModal.protocol,
+        host: remoteModal.host,
+        port: parseInt(remoteModal.port, 10) || (remoteModal.protocol === 'sftp' ? 22 : 21),
+        username: remoteModal.username,
+        authType: remoteModal.authType,
+        password: remoteModal.password || undefined,
+        privateKeyPath: remoteModal.privateKeyPath || undefined,
+        passphrase: remoteModal.passphrase || undefined,
+        initialPath: remoteModal.initialPath || '/',
+        rejectUnauthorized: remoteModal.rejectUnauthorized,
+        keepExistingSecrets: remoteModal.mode === 'edit',
+      });
+      setRemoteModal(prev => ({
+        ...prev,
+        testing: false,
+        testResult: res.success
+          ? { success: true, message: `Connected! Ready at ${res.resolvedPath || '/'}` }
+          : { success: false, message: res.error || 'Connection failed.' },
+      }));
+    } catch (err: any) {
+      setRemoteModal(prev => ({
+        ...prev,
+        testing: false,
+        testResult: { success: false, message: err?.message || String(err) },
+      }));
+    }
+  }, [remoteModal]);
+
+  const saveRemoteConnectionModal = useCallback(async (connectImmediately = false) => {
+    if (!remoteModal.host.trim()) {
+      setRemoteModal(prev => ({ ...prev, testResult: { success: false, message: 'Host is required.' } }));
+      return;
+    }
+    setRemoteModal(prev => ({ ...prev, saving: true }));
+    try {
+      const saved = await api.remoteSaveConnection({
+        id: remoteModal.id,
+        name: remoteModal.name.trim() || remoteModal.host.trim(),
+        protocol: remoteModal.protocol,
+        host: remoteModal.host.trim(),
+        port: parseInt(remoteModal.port, 10) || (remoteModal.protocol === 'sftp' ? 22 : 21),
+        username: remoteModal.username.trim(),
+        authType: remoteModal.authType,
+        password: remoteModal.password || undefined,
+        privateKeyPath: remoteModal.privateKeyPath.trim() || undefined,
+        passphrase: remoteModal.passphrase || undefined,
+        initialPath: remoteModal.initialPath.trim() || '/',
+        rejectUnauthorized: remoteModal.rejectUnauthorized,
+        keepExistingSecrets: remoteModal.mode === 'edit',
+      });
+      setRemoteModal(prev => ({ ...prev, isOpen: false, saving: false }));
+      await refreshRemoteConnections();
+      if (connectImmediately && saved) {
+        await connectAndNavigateToRemote(saved);
+      } else {
+        showToast({ type: 'success', title: 'Server saved', message: `${saved.name} (${saved.protocol.toUpperCase()})` });
+      }
+    } catch (err: any) {
+      setRemoteModal(prev => ({
+        ...prev,
+        saving: false,
+        testResult: { success: false, message: err?.message || String(err) },
+      }));
+    }
+  }, [remoteModal, refreshRemoteConnections, connectAndNavigateToRemote, showToast]);
+
   // Drag & drop support: internal (from our rows via dataTransfer) + external (files from Explorer/desktop)
   // Drop targets the given path (dir row, pane bg, QA, drive).
   // Modifiers: Ctrl (Option on macOS) held = force copy, Shift held = force move.
@@ -1593,7 +2079,7 @@ export default function App() {
           if (Array.isArray(parsed)) paths = parsed.filter((p: any) => typeof p === 'string');
           else if (typeof parsed === 'string') paths = [parsed];
         } catch {
-          if (isAbsolutePath(json)) {
+          if (isAbsolutePath(json) || isRemotePath(json)) {
             paths = [json.trim()];
           }
         }
@@ -1615,8 +2101,13 @@ export default function App() {
 
     // Dropping into a virtual collection: adds references without copying/moving on disk
     if (targetDir.startsWith('collection:')) {
+      const localOnly = paths.filter(p => !isRemotePath(p));
+      if (localOnly.length === 0) {
+        showToast({ type: 'info', title: 'Local items only', message: 'Virtual Collections only support local files and folders.' });
+        return;
+      }
       const colId = targetDir.slice('collection:'.length);
-      addPathsToCollection(colId, paths);
+      addPathsToCollection(colId, localOnly);
       return;
     }
     const forceCopy = isCopyModifier(e);
@@ -1663,15 +2154,20 @@ export default function App() {
         return;
       }
 
-      // Refresh panes that are viewing the target or ancestor/descendant
+      // Refresh panes that are viewing the target or source (on move)
       const actPath = activePaneIsRight ? rightCurrentPath : currentPath;
-      const isAffected = (p: string) => isSameOrInside(p, targetDir) || isSameOrInside(targetDir, p);
+      const isAffected = (p: string) =>
+        isSameOrInside(p, targetDir) ||
+        isSameOrInside(targetDir, p) ||
+        (useMove && srcDir && (isSameOrInside(p, srcDir) || isSameOrInside(srcDir, p)));
       if (isAffected(actPath)) {
+        dirCacheRef.current.delete(actPath);
         if (activePaneIsRight) await loadRightDirectory(actPath); else await loadDirectory(actPath);
       }
       if (dualPane) {
         const othPath = activePaneIsRight ? currentPath : rightCurrentPath;
         if (isAffected(othPath)) {
+          dirCacheRef.current.delete(othPath);
           if (activePaneIsRight) await loadDirectory(othPath); else await loadRightDirectory(othPath);
         }
       }
@@ -1913,10 +2409,12 @@ export default function App() {
     return { folderCount, fileCount, filesTotalBytes };
   }, [entries]);
 
-  // Keyboard shortcuts — respect active pane for nav / refresh / calc / spacebar Quick Look
+  // Keyboard shortcuts — respect active pane for nav / refresh / calc / spacebar Quick Look / delete / rename
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      const isInput = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName || '');
+      const isInput = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName || '');
+      const hasBlockingModal = Boolean(deleteConfirm || renameModal || remoteModal.isOpen || elevationPrompt || collectionModal.isOpen);
+      if (hasBlockingModal) return;
 
       // Spacebar Quick Look toggle
       if (e.code === 'Space' && !isInput) {
@@ -1991,7 +2489,27 @@ export default function App() {
         return;
       }
 
-      if (e.key === 'Backspace' && !isInput) {
+      if ((e.key === 'Delete' || (IS_MAC && e.metaKey && e.key === 'Backspace')) && !isInput) {
+        const activeSel = activePaneIsRight ? rightSelected : selected;
+        const activeList = activePaneIsRight ? rightEntries : entries;
+        const ent = activeList.find(x => x.path === activeSel);
+        if (ent) {
+          e.preventDefault();
+          requestDelete([ent], e.shiftKey);
+          return;
+        }
+      }
+      if (e.key === 'F2' && !isInput) {
+        const activeSel = activePaneIsRight ? rightSelected : selected;
+        const activeList = activePaneIsRight ? rightEntries : entries;
+        const ent = activeList.find(x => x.path === activeSel);
+        if (ent) {
+          e.preventDefault();
+          requestRename(ent);
+          return;
+        }
+      }
+      if (e.key === 'Backspace' && !e.metaKey && !isInput) {
         activeGoUp();
       }
       if (e.key === 'F5') {
@@ -2048,7 +2566,8 @@ export default function App() {
     activeGoUp, activeRefresh, activeCalculateAllVisibleSizes, selected, entries, 
     copyToClipboard, pasteFromClipboard, activePaneIsRight, rightSelected, rightEntries, 
     navigateRight, viewer, activePane, rightVisibleEntries, visibleEntries, navigateViewer, 
-    addNewTab, openEntry, toggleSidebar
+    addNewTab, openEntry, toggleSidebar, requestDelete, requestRename,
+    deleteConfirm, renameModal, remoteModal.isOpen, elevationPrompt, collectionModal.isOpen
   ]);
 
   const toggleSort = (key: 'name' | 'size' | 'mtime') => {
@@ -2234,6 +2753,9 @@ export default function App() {
     if (act === 'open') openEntry(entry, activePaneIsRight ? 'right' : 'left');
     if (act === 'explorer') api.showInExplorer(entry.path);
     if (act === 'calc' && entry.isDirectory) calculateFolderSize(entry.path, true);
+    if (act === 'rename') requestRename(entry);
+    if (act === 'delete') requestDelete([entry], false);
+    if (act === 'delete-permanent') requestDelete([entry], true);
     if (act === 'copy') {
       try {
         await navigator.clipboard.writeText(entry.path);
@@ -2259,6 +2781,9 @@ export default function App() {
       if (collectionCtx && collectionMenuRef.current && !collectionMenuRef.current.contains(event.target as Node)) {
         setCollectionCtx(null);
       }
+      if (remoteCtx && remoteMenuRef.current && !remoteMenuRef.current.contains(event.target as Node)) {
+        setRemoteCtx(null);
+      }
       if (showCachePopover && cachePopoverRef.current && !cachePopoverRef.current.contains(event.target as Node)) {
         setShowCachePopover(false);
       }
@@ -2270,7 +2795,7 @@ export default function App() {
     return () => {
       document.removeEventListener('mousedown', handleOutsideClick);
     };
-  }, [ctx, driveCtx, collectionCtx, showCachePopover]);
+  }, [ctx, driveCtx, collectionCtx, remoteCtx, showCachePopover]);
 
   const selectedEntry = entries.find(e => e.path === selected);
 
@@ -2468,10 +2993,12 @@ export default function App() {
             >
               {tab.path.startsWith('collection:') ? (
                 <Bookmark size={13} className={isActive ? 'text-violet-400 flex-shrink-0' : 'text-zinc-500 flex-shrink-0'} />
+              ) : isRemotePath(tab.path) ? (
+                <Server size={13} className={isActive ? 'text-emerald-400 flex-shrink-0' : 'text-zinc-500 flex-shrink-0'} />
               ) : (
                 <Folder size={13} className={isActive ? 'text-blue-400 flex-shrink-0' : 'text-zinc-500 flex-shrink-0'} />
               )}
-              <span className="truncate flex-1 min-w-0">{getTabTitle(tab.path, collections)}</span>
+              <span className="truncate flex-1 min-w-0">{getTabTitle(tab.path, collections, remoteConnections)}</span>
               {tabs.length > 1 && (
                 <button
                   onClick={(e) => closeTab(tab.id, e)}
@@ -2504,7 +3031,20 @@ export default function App() {
               onChange={(e) => setPathInputValue(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
-                  activeNavigate(pathInputValue);
+                  const trimmed = pathInputValue.trim();
+                  const remoteMatch = /^(sftp|ftps?):\/\/([^/@]+@)?([^:/]+)(?::(\d+))?(\/.*)?$/i.exec(trimmed);
+                  const knownConn = remoteMatch ? remoteConnections.find(c => c.id === trimmed.slice(trimmed.indexOf('://') + 3).split('/')[0]) : null;
+                  if (remoteMatch && !knownConn) {
+                    const proto = remoteMatch[1].toLowerCase() as RemoteProtocol;
+                    const user = remoteMatch[2] ? remoteMatch[2].slice(0, -1) : '';
+                    const host = remoteMatch[3];
+                    const port = remoteMatch[4] || (proto === 'sftp' ? '22' : '21');
+                    const initPath = remoteMatch[5] || '/';
+                    setIsEditingPath(false);
+                    openRemoteModalForCreate({ protocol: proto, host, port, username: user, initialPath: initPath });
+                    return;
+                  }
+                  activeNavigate(trimmed);
                   setIsEditingPath(false);
                 } else if (e.key === 'Escape') {
                   setPathInputValue(activeCurrentPath);
@@ -2542,7 +3082,7 @@ export default function App() {
         ) : (
           <div className="flex items-center flex-1 min-w-0 h-8 box-border bg-zinc-900/60 border border-zinc-800/80 rounded px-2.5 hover:border-zinc-700/80 transition-colors">
             <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5 max-w-full">
-              {parseBreadcrumbs(activeCurrentPath, collections).map((b, idx, arr) => {
+              {parseBreadcrumbs(activeCurrentPath, collections, remoteConnections).map((b, idx, arr) => {
                 const driveMatch = drives.find(d => pathsEqual(normalizeDirPath(d.path), b.fullPath)) || null;
                 const isDrive = !!driveMatch;
                 const driveTitle = driveMatch?.label
@@ -2550,6 +3090,7 @@ export default function App() {
                   : (driveMatch?.size != null && driveMatch?.freeSpace != null ? `${b.name} (${formatSize(driveMatch.freeSpace)} free of ${formatSize(driveMatch.size)})` : b.fullPath);
 
                 const isCol = b.isCollection;
+                const isRemoteRoot = b.isRemoteRoot;
                 const colObj = isCol ? collections.find(c => ('collection:' + c.id) === b.fullPath) : null;
                 const colColor = getColColor(colObj?.color);
 
@@ -2564,11 +3105,14 @@ export default function App() {
                           ? 'text-zinc-500 cursor-default'
                           : isCol
                             ? `${colColor.textClass} hover:bg-zinc-800 cursor-pointer font-semibold`
-                            : 'text-zinc-300 hover:text-white hover:bg-zinc-800 cursor-pointer'
+                            : isRemoteRoot
+                              ? 'text-emerald-300 hover:bg-zinc-800 cursor-pointer font-semibold'
+                              : 'text-zinc-300 hover:text-white hover:bg-zinc-800 cursor-pointer'
                       }`}
                       title={isDrive ? driveTitle : (isCol ? `Virtual Collection: ${b.name}` : b.fullPath)}
                     >
                       {isDrive && <HardDrive size={12} className="mr-1 text-emerald-400 flex-shrink-0" />}
+                      {isRemoteRoot && <Server size={12} className="mr-1 text-emerald-400 flex-shrink-0" />}
                       {b.isCollectionRoot && <Layers size={12} className="mr-1 text-violet-400 flex-shrink-0" />}
                       {isCol && <Bookmark size={12} className={`mr-1 ${colColor.textClass} flex-shrink-0`} />}
                       {b.name}
@@ -2816,6 +3360,89 @@ export default function App() {
                   <div className="mx-1.5 px-2.5 py-1 text-zinc-500 text-xs italic">
                     No collections yet
                   </div>
+                )}
+
+                <div className="px-3 pt-4 pb-1 text-[10px] font-semibold tracking-wider text-zinc-500 flex items-center justify-between">
+                  <span>REMOTE SERVERS</span>
+                  <button
+                    onClick={() => openRemoteModalForCreate()}
+                    className="text-blue-400 hover:text-blue-300 text-lg leading-none px-1 cursor-pointer"
+                    title="Add FTP / FTPS / SFTP server"
+                  >
+                    +
+                  </button>
+                </div>
+                {remoteConnections.length > 0 ? remoteConnections.map(conn => {
+                  const activeUri = activePaneIsRight ? rightCurrentPath : currentPath;
+                  const activeParsed = parseRemoteUri(activeUri);
+                  const isCurrent = activeParsed?.connectionId === conn.id;
+                  const isConnecting = connectingRemoteId === conn.id;
+
+                  return (
+                    <div
+                      key={conn.id}
+                      onClick={() => connectAndNavigateToRemote(conn)}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        let x = e.clientX;
+                        let y = e.clientY;
+                        const estimatedMenuHeight = 200;
+                        if (y + estimatedMenuHeight > window.innerHeight - 8) {
+                          y = Math.max(8, e.clientY - estimatedMenuHeight);
+                        }
+                        if (ctx) closeCtx();
+                        if (driveCtx) closeDriveCtx();
+                        setCollectionCtx(null);
+                        setRemoteCtx({ x, y, connection: conn });
+                      }}
+                      onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }}
+                      onDrop={(e) => {
+                        const targetRemote = buildRemoteUri(conn.protocol, conn.id, conn.initialPath || '/');
+                        handleDropToPath(e, targetRemote);
+                      }}
+                      className={`mx-1.5 px-2.5 py-1.5 rounded flex items-center gap-2 cursor-pointer transition-colors ${
+                        isCurrent ? 'bg-zinc-800' : 'hover:bg-zinc-900'
+                      }`}
+                      title={`${conn.name} (${conn.protocol.toUpperCase()}://${conn.username ? conn.username + '@' : ''}${conn.host}:${conn.port})\nClick to connect & browse • Right-click for options`}
+                    >
+                      <div className="relative flex-shrink-0">
+                        {isConnecting ? (
+                          <Loader2 size={14} className="animate-spin text-blue-400" />
+                        ) : (
+                          <Server size={14} className={conn.connected ? 'text-emerald-400' : 'text-zinc-400'} />
+                        )}
+                        <span
+                          className={`absolute -bottom-0.5 -right-0.5 w-2 h-2 rounded-full border border-[#111113] ${
+                            conn.connected ? 'bg-emerald-400' : (conn.lastError ? 'bg-rose-400' : 'bg-zinc-600')
+                          }`}
+                        />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="truncate text-zinc-200 font-medium text-xs leading-tight">{conn.name}</div>
+                        <div className="truncate text-[10px] text-zinc-500 font-mono leading-tight">
+                          {conn.username ? `${conn.username}@` : ''}{conn.host}
+                        </div>
+                      </div>
+                      <span className={`text-[9px] uppercase font-mono px-1.5 py-px rounded border flex-shrink-0 ${
+                        conn.protocol === 'sftp'
+                          ? 'bg-emerald-950/50 text-emerald-300 border-emerald-700/40'
+                          : conn.protocol === 'ftps'
+                            ? 'bg-sky-950/50 text-sky-300 border-sky-700/40'
+                            : 'bg-amber-950/50 text-amber-300 border-amber-700/40'
+                      }`}>
+                        {conn.protocol}
+                      </span>
+                    </div>
+                  );
+                }) : (
+                  <button
+                    onClick={() => openRemoteModalForCreate()}
+                    className="mx-2 my-0.5 px-2.5 py-1.5 rounded border border-dashed border-zinc-800 hover:border-zinc-700 text-zinc-500 hover:text-zinc-300 text-xs flex items-center gap-1.5 transition cursor-pointer"
+                  >
+                    <PlugZap size={13} className="text-emerald-400/80" />
+                    <span>Connect FTP / SFTP...</span>
+                  </button>
                 )}
 
                 <div className="flex-1" />
@@ -3594,23 +4221,27 @@ export default function App() {
                 <div className="context-menu-item" onClick={() => ctxAction('new-folder')}>
                   <Folder size={14} /> New folder
                 </div>
-                <div className="context-menu-item" onClick={() => ctxAction('pin-quick')}>
-                  Add current folder to Quick Access
-                </div>
-                <div className="border-t border-zinc-700 my-0.5" />
-                <div className="context-menu-item" onClick={() => ctxAction('open-cmd')}>
-                  {IS_WIN ? 'Open Command Prompt here' : 'Open Terminal here'}
-                </div>
-                {IS_WIN && (
-                  <div className="context-menu-item" onClick={() => ctxAction('open-powershell')}>
-                    Open PowerShell here
-                  </div>
+                {!isRemotePath(activePaneIsRight ? rightCurrentPath : currentPath) && (
+                  <>
+                    <div className="context-menu-item" onClick={() => ctxAction('pin-quick')}>
+                      Add current folder to Quick Access
+                    </div>
+                    <div className="border-t border-zinc-700 my-0.5" />
+                    <div className="context-menu-item" onClick={() => ctxAction('open-cmd')}>
+                      {IS_WIN ? 'Open Command Prompt here' : 'Open Terminal here'}
+                    </div>
+                    {IS_WIN && (
+                      <div className="context-menu-item" onClick={() => ctxAction('open-powershell')}>
+                        Open PowerShell here
+                      </div>
+                    )}
+                  </>
                 )}
                 <div className="border-t border-zinc-700 my-0.5" />
                 <div className="context-menu-item" onClick={() => ctxAction('paste')}>
                   Paste
                 </div>
-                {IS_WIN && clipboard && clipboard.paths.length > 0 && (
+                {IS_WIN && !isRemotePath(activePaneIsRight ? rightCurrentPath : currentPath) && clipboard && clipboard.paths.length > 0 && (
                   <div
                     className="context-menu-item text-amber-300 hover:text-amber-200"
                     onClick={() => {
@@ -3635,13 +4266,15 @@ export default function App() {
               <div className="context-menu-item" onClick={() => ctxAction('open')}>
                 {ctx.entry.isDirectory ? 'Open' : 'Open file'}
               </div>
-              <div className="context-menu-item" onClick={() => ctxAction('explorer')}>
-                {IS_MAC ? 'Reveal in Finder' : `Show in ${FILE_MANAGER_NAME}`}
-              </div>
+              {!isRemotePath(ctx.entry.path) && (
+                <div className="context-menu-item" onClick={() => ctxAction('explorer')}>
+                  {IS_MAC ? 'Reveal in Finder' : `Show in ${FILE_MANAGER_NAME}`}
+                </div>
+              )}
               {!ctx.entry.isDirectory && (
                 <div className="context-menu-item" onClick={() => ctxAction('save-as')}>
                   <Save size={14} className="text-blue-400" />
-                  <span>Save as...</span>
+                  <span>{isRemotePath(ctx.entry.path) ? 'Download as...' : 'Save as...'}</span>
                 </div>
               )}
               <div className="border-t border-zinc-700 my-0.5" />
@@ -3661,62 +4294,64 @@ export default function App() {
                 </div>
               )}
 
-              <div
-                className="relative"
-                onMouseEnter={() => setSubmenuOpen('collection')}
-              >
-                <div className="context-menu-item flex items-center justify-between">
-                  <div className="flex items-center gap-1.5">
-                    <BookmarkPlus size={14} className="text-violet-400" />
-                    <span>Add to Collection</span>
-                  </div>
-                  <ChevronRight size={12} className="text-zinc-500" />
-                </div>
-                {submenuOpen === 'collection' && (
-                  <div
-                    className="absolute left-full top-0 ml-1 min-w-[170px] bg-[#18181b] border border-zinc-700/80 rounded-md shadow-2xl py-1 z-50 text-xs"
-                    onMouseLeave={() => setSubmenuOpen(null)}
-                  >
-                    {collections.map(c => {
-                      const colColor = getColColor(c.color);
-                      const alreadyIn = c.paths.some(p => pathsEqual(p, ctx.entry!.path));
-                      return (
-                        <div
-                          key={c.id}
-                          className={`context-menu-item flex items-center justify-between ${alreadyIn ? 'text-zinc-500' : ''}`}
-                          onClick={() => {
-                            addPathsToCollection(c.id, [ctx.entry!.path]);
-                            closeCtx();
-                          }}
-                        >
-                          <div className="flex items-center gap-2 truncate">
-                            <span className={`w-2 h-2 rounded-full ${colColor.bgClass} flex-shrink-0`} />
-                            <span className="truncate">{c.name}</span>
-                          </div>
-                          {alreadyIn && <BookmarkCheck size={12} className="text-emerald-400 flex-shrink-0 ml-1" />}
-                        </div>
-                      );
-                    })}
-                    <div className="border-t border-zinc-700 my-0.5" />
-                    <div
-                      className="context-menu-item flex items-center gap-2 text-blue-400 hover:text-blue-300 font-medium"
-                      onClick={() => {
-                        setPendingAddPaths([ctx.entry!.path]);
-                        setCollectionModal({
-                          isOpen: true,
-                          mode: 'create',
-                          name: '',
-                          color: 'violet',
-                        });
-                        closeCtx();
-                      }}
-                    >
-                      <Plus size={13} />
-                      <span>New Collection...</span>
+              {!isRemotePath(ctx.entry.path) && (
+                <div
+                  className="relative"
+                  onMouseEnter={() => setSubmenuOpen('collection')}
+                >
+                  <div className="context-menu-item flex items-center justify-between">
+                    <div className="flex items-center gap-1.5">
+                      <BookmarkPlus size={14} className="text-violet-400" />
+                      <span>Add to Collection</span>
                     </div>
+                    <ChevronRight size={12} className="text-zinc-500" />
                   </div>
-                )}
-              </div>
+                  {submenuOpen === 'collection' && (
+                    <div
+                      className="absolute left-full top-0 ml-1 min-w-[170px] bg-[#18181b] border border-zinc-700/80 rounded-md shadow-2xl py-1 z-50 text-xs"
+                      onMouseLeave={() => setSubmenuOpen(null)}
+                    >
+                      {collections.map(c => {
+                        const colColor = getColColor(c.color);
+                        const alreadyIn = c.paths.some(p => pathsEqual(p, ctx.entry!.path));
+                        return (
+                          <div
+                            key={c.id}
+                            className={`context-menu-item flex items-center justify-between ${alreadyIn ? 'text-zinc-500' : ''}`}
+                            onClick={() => {
+                              addPathsToCollection(c.id, [ctx.entry!.path]);
+                              closeCtx();
+                            }}
+                          >
+                            <div className="flex items-center gap-2 truncate">
+                              <span className={`w-2 h-2 rounded-full ${colColor.bgClass} flex-shrink-0`} />
+                              <span className="truncate">{c.name}</span>
+                            </div>
+                            {alreadyIn && <BookmarkCheck size={12} className="text-emerald-400 flex-shrink-0 ml-1" />}
+                          </div>
+                        );
+                      })}
+                      <div className="border-t border-zinc-700 my-0.5" />
+                      <div
+                        className="context-menu-item flex items-center gap-2 text-blue-400 hover:text-blue-300 font-medium"
+                        onClick={() => {
+                          setPendingAddPaths([ctx.entry!.path]);
+                          setCollectionModal({
+                            isOpen: true,
+                            mode: 'create',
+                            name: '',
+                            color: 'violet',
+                          });
+                          closeCtx();
+                        }}
+                      >
+                        <Plus size={13} />
+                        <span>New Collection...</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="border-t border-zinc-700 my-0.5" />
               {ctx.entry.isDirectory && (
@@ -3724,18 +4359,22 @@ export default function App() {
                   <Calculator size={14} /> Calculate size now
                 </div>
               )}
-              {ctx.entry?.isDirectory && !quickAccess.some(q => pathsEqual(q.path, ctx.entry!.path)) && (
+              {!isRemotePath(ctx.entry.path) && ctx.entry?.isDirectory && !quickAccess.some(q => pathsEqual(q.path, ctx.entry!.path)) && (
                 <div className="context-menu-item" onClick={() => ctxAction('pin-quick')}>
                   Pin to Quick Access
                 </div>
               )}
-              <div className="context-menu-item" onClick={() => ctxAction('open-cmd')}>
-                {IS_WIN ? 'Open Command Prompt here' : 'Open Terminal here'}
-              </div>
-              {IS_WIN && (
-                <div className="context-menu-item" onClick={() => ctxAction('open-powershell')}>
-                  Open PowerShell here
-                </div>
+              {!isRemotePath(ctx.entry.path) && (
+                <>
+                  <div className="context-menu-item" onClick={() => ctxAction('open-cmd')}>
+                    {IS_WIN ? 'Open Command Prompt here' : 'Open Terminal here'}
+                  </div>
+                  {IS_WIN && (
+                    <div className="context-menu-item" onClick={() => ctxAction('open-powershell')}>
+                      Open PowerShell here
+                    </div>
+                  )}
+                </>
               )}
               <div className="context-menu-item" onClick={() => ctxAction('copy-item')}>
                 Copy
@@ -3746,7 +4385,7 @@ export default function App() {
               <div className="context-menu-item" onClick={() => ctxAction('paste')}>
                 Paste
               </div>
-              {IS_WIN && clipboard && clipboard.paths.length > 0 && (
+              {IS_WIN && !isRemotePath(ctx.entry.path) && clipboard && clipboard.paths.length > 0 && (
                 <div
                   className="context-menu-item text-amber-300 hover:text-amber-200"
                   onClick={() => {
@@ -3763,6 +4402,21 @@ export default function App() {
                   <span>Paste as Administrator</span>
                 </div>
               )}
+              <div className="border-t border-zinc-700 my-0.5" />
+              <div className="context-menu-item justify-between" onClick={() => ctxAction('rename')}>
+                <span className="flex items-center gap-2">
+                  <Edit3 size={14} className="text-zinc-400" />
+                  <span>Rename</span>
+                </span>
+                <span className="text-[10px] text-zinc-500 font-mono">F2</span>
+              </div>
+              <div className="context-menu-item danger justify-between" onClick={() => ctxAction('delete')}>
+                <span className="flex items-center gap-2">
+                  <Trash2 size={14} className="text-rose-400" />
+                  <span>{isRemotePath(ctx.entry.path) ? 'Delete from server' : 'Delete'}</span>
+                </span>
+                <span className="text-[10px] text-rose-400/70 font-mono">{IS_MAC ? '⌘⌫' : 'Del'}</span>
+              </div>
               <div className="border-t border-zinc-700 my-0.5" />
               <div className="context-menu-item" onClick={() => ctxAction('copy')}>
                 Copy full path
@@ -3873,6 +4527,72 @@ export default function App() {
           >
             <Trash2 size={14} className="text-rose-400" />
             <span>Delete Collection</span>
+          </div>
+        </div>
+      )}
+
+      {/* Remote Server context menu for sidebar entries */}
+      {remoteCtx && (
+        <div ref={remoteMenuRef} className="context-menu" style={{ left: remoteCtx.x, top: remoteCtx.y }}>
+          <div
+            className="context-menu-item flex items-center gap-2"
+            onClick={() => {
+              const conn = remoteCtx.connection;
+              setRemoteCtx(null);
+              connectAndNavigateToRemote(conn);
+            }}
+          >
+            <PlugZap size={14} className="text-emerald-400" />
+            <span>{remoteCtx.connection.connected ? 'Open in Active Pane' : 'Connect & Open'}</span>
+          </div>
+          <div
+            className="context-menu-item flex items-center gap-2"
+            onClick={() => {
+              const conn = remoteCtx.connection;
+              setRemoteCtx(null);
+              connectAndNavigateToRemote(conn, 'right');
+            }}
+          >
+            <Columns2 size={14} className="text-blue-400" />
+            <span>Open in Split Right Pane</span>
+          </div>
+          {remoteCtx.connection.connected && (
+            <div
+              className="context-menu-item flex items-center gap-2 text-amber-300"
+              onClick={() => {
+                const conn = remoteCtx.connection;
+                setRemoteCtx(null);
+                disconnectRemoteServer(conn);
+              }}
+            >
+              <Unplug size={14} className="text-amber-400" />
+              <span>Disconnect</span>
+            </div>
+          )}
+          <div className="border-t border-zinc-700 my-0.5" />
+          <div
+            className="context-menu-item flex items-center gap-2"
+            onClick={() => {
+              const conn = remoteCtx.connection;
+              setRemoteCtx(null);
+              openRemoteModalForEdit(conn);
+            }}
+          >
+            <Edit3 size={14} className="text-zinc-400" />
+            <span>Edit Connection...</span>
+          </div>
+          <div
+            className="context-menu-item text-rose-400 hover:text-rose-300 flex items-center gap-2"
+            onClick={() => {
+              const conn = remoteCtx.connection;
+              setRemoteCtx(null);
+              if (window.confirm(`Remove saved server "${conn.name}"?`)) {
+                deleteRemoteServer(conn);
+              }
+            }}
+          >
+            <Trash2 size={14} className="text-rose-400" />
+            <span>Remove Server</span>
           </div>
         </div>
       )}
@@ -4142,7 +4862,11 @@ export default function App() {
               <p className="text-zinc-300 leading-relaxed text-[13px]">
                 {elevationPrompt.action === 'createFolder'
                   ? 'Administrator permission is required to create a folder in this location:'
-                  : `Administrator permission is required to ${elevationPrompt.isMove ? 'move' : 'copy'} into this location:`}
+                  : elevationPrompt.action === 'delete'
+                    ? 'Administrator permission is required to permanently delete item(s) in this location:'
+                    : elevationPrompt.action === 'rename'
+                      ? `Administrator permission is required to rename this item to "${elevationPrompt.newName || ''}":`
+                      : `Administrator permission is required to ${elevationPrompt.isMove ? 'move' : 'copy'} into this location:`}
               </p>
 
               <div className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg bg-[#1a1a1f] border border-zinc-700/80 font-mono text-xs text-blue-300">
@@ -4349,10 +5073,507 @@ export default function App() {
         </div>
       )}
 
+      {/* Delete Confirmation Modal */}
+      {deleteConfirm && (
+        <div
+          className="fixed inset-0 bg-black/70 backdrop-blur-xs z-[10001] flex items-center justify-center p-4"
+          onClick={() => { if (!isDeleting) setDeleteConfirm(null); }}
+        >
+          <div
+            className="bg-[#18181b] border border-rose-500/40 rounded-xl shadow-2xl w-full max-w-md flex flex-col overflow-hidden text-zinc-100"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-3.5 border-b border-zinc-800 bg-[#141416]">
+              <div className="flex items-center gap-2.5 font-semibold text-rose-400 text-sm">
+                <Trash2 size={18} className="text-rose-400" />
+                <span>
+                  {deleteConfirm.entries.every(e => isRemotePath(e.path))
+                    ? 'Delete from Remote Server'
+                    : deleteConfirm.permanent
+                      ? 'Delete Permanently'
+                      : (IS_MAC ? 'Move to Trash' : 'Move to Recycle Bin')}
+                </span>
+              </div>
+              {!isDeleting && (
+                <button
+                  onClick={() => setDeleteConfirm(null)}
+                  className="text-zinc-400 hover:text-white p-1 rounded hover:bg-zinc-800 cursor-pointer"
+                >
+                  <X size={15} />
+                </button>
+              )}
+            </div>
+
+            <div className="p-5 bg-[#121215] flex flex-col gap-3 text-xs">
+              <p className="text-zinc-300 text-[13px] leading-relaxed">
+                {deleteConfirm.entries.length === 1
+                  ? (
+                    <>
+                      Are you sure you want to delete{' '}
+                      <strong className="text-white">"{deleteConfirm.entries[0].name}"</strong>?
+                    </>
+                  )
+                  : (
+                    <>
+                      Are you sure you want to delete{' '}
+                      <strong className="text-white">{deleteConfirm.entries.length} selected items</strong>?
+                    </>
+                  )}
+              </p>
+
+              <div className="bg-zinc-900/80 border border-zinc-800 rounded-lg p-2.5 max-h-32 overflow-auto flex flex-col gap-1">
+                {deleteConfirm.entries.map(item => (
+                  <div key={item.path} className="flex items-center justify-between gap-2 text-zinc-300">
+                    <div className="flex items-center gap-2 min-w-0">
+                      {item.isDirectory
+                        ? <Folder size={13} className="text-blue-400 flex-shrink-0" />
+                        : <File size={13} className="text-zinc-400 flex-shrink-0" />}
+                      <span className="truncate font-medium">{item.name}</span>
+                    </div>
+                    {!item.isDirectory && item.size != null && (
+                      <span className="text-[11px] text-zinc-500 tabular-nums flex-shrink-0">
+                        {formatSize(item.size)}
+                      </span>
+                    )}
+                  </div>
+                ))}
+              </div>
+
+              {deleteConfirm.entries.every(e => isRemotePath(e.path)) ? (
+                <div className="flex items-start gap-2 p-2.5 rounded-lg bg-rose-950/30 border border-rose-500/30 text-rose-200 text-[11px] leading-normal">
+                  <AlertTriangle size={14} className="text-rose-400 flex-shrink-0 mt-0.5" />
+                  <span>
+                    Remote FTP/SFTP items are deleted directly from the server and cannot be recovered from Trash.
+                  </span>
+                </div>
+              ) : (
+                <label className="flex items-center gap-2.5 pt-1 cursor-pointer select-none text-zinc-300">
+                  <input
+                    type="checkbox"
+                    checked={deleteConfirm.permanent}
+                    onChange={(e) => setDeleteConfirm(prev => prev ? { ...prev, permanent: e.target.checked } : prev)}
+                    className="rounded border-zinc-600 bg-zinc-900 accent-rose-500 cursor-pointer"
+                  />
+                  <span className="text-xs">
+                    Delete permanently <span className="text-zinc-500">(skip {IS_MAC ? 'Trash' : 'Recycle Bin'} — cannot be undone)</span>
+                  </span>
+                </label>
+              )}
+            </div>
+
+            <div className="p-3.5 border-t border-zinc-800 bg-[#141416] flex justify-end gap-2 text-xs">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => setDeleteConfirm(null)}
+                className="px-4 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 font-medium transition cursor-pointer disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={confirmDelete}
+                className="px-4 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-semibold flex items-center gap-1.5 shadow-lg shadow-rose-950/40 transition cursor-pointer disabled:opacity-60"
+              >
+                {isDeleting ? (
+                  <>
+                    <Loader2 size={14} className="animate-spin" />
+                    <span>Deleting...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 size={14} />
+                    <span>
+                      {deleteConfirm.entries.every(e => isRemotePath(e.path))
+                        ? 'Delete from Server'
+                        : deleteConfirm.permanent
+                          ? 'Delete Permanently'
+                          : (IS_MAC ? 'Move to Trash' : 'Move to Recycle Bin')}
+                    </span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Rename Modal */}
+      {renameModal && (
+        <div
+          className="fixed inset-0 bg-black/65 backdrop-blur-xs z-[10001] flex items-center justify-center p-4"
+          onClick={() => { if (!isRenaming) setRenameModal(null); }}
+        >
+          <div
+            className="bg-[#18181b] border border-zinc-700/80 rounded-xl shadow-2xl w-full max-w-sm p-5 flex flex-col gap-4 text-zinc-100"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-zinc-800 pb-3">
+              <div className="flex items-center gap-2">
+                <Edit3 className="text-blue-400" size={17} />
+                <h3 className="font-semibold text-sm">
+                  Rename {renameModal.entry.isDirectory ? 'Folder' : 'File'}
+                </h3>
+              </div>
+              {!isRenaming && (
+                <button
+                  onClick={() => setRenameModal(null)}
+                  className="text-zinc-400 hover:text-zinc-200 p-1 rounded-md hover:bg-zinc-800 cursor-pointer"
+                >
+                  <X size={15} />
+                </button>
+              )}
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[11px] font-medium text-zinc-400">New Name</label>
+              <input
+                autoFocus
+                type="text"
+                value={renameModal.newName}
+                onFocus={(e) => {
+                  if (!renameModal.entry.isDirectory) {
+                    const dotIdx = e.target.value.lastIndexOf('.');
+                    if (dotIdx > 0) {
+                      e.target.setSelectionRange(0, dotIdx);
+                      return;
+                    }
+                  }
+                  e.target.select();
+                }}
+                onChange={(e) => setRenameModal(prev => prev ? { ...prev, newName: e.target.value } : prev)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') confirmRename();
+                  if (e.key === 'Escape' && !isRenaming) setRenameModal(null);
+                }}
+                className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-xs text-zinc-100 focus:outline-none focus:border-blue-500"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-zinc-800">
+              <button
+                type="button"
+                disabled={isRenaming}
+                onClick={() => setRenameModal(null)}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isRenaming}
+                onClick={confirmRename}
+                className="px-4 py-1.5 rounded-lg text-xs font-medium bg-blue-600 hover:bg-blue-500 text-white shadow-sm transition cursor-pointer flex items-center gap-1.5 disabled:opacity-60"
+              >
+                {isRenaming && <Loader2 size={13} className="animate-spin" />}
+                <span>Rename</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Add / Edit FTP / FTPS / SFTP Server Modal */}
+      {remoteModal.isOpen && (
+        <div
+          className="fixed inset-0 bg-black/70 backdrop-blur-xs z-[10001] flex items-center justify-center p-4"
+          onClick={() => { if (!remoteModal.saving) setRemoteModal(prev => ({ ...prev, isOpen: false })); }}
+        >
+          <div
+            className="bg-[#18181b] border border-zinc-700/80 rounded-xl shadow-2xl w-full max-w-lg flex flex-col overflow-hidden text-zinc-100"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-5 py-3.5 border-b border-zinc-800 bg-[#141416]">
+              <div className="flex items-center gap-2.5">
+                <Server className="text-emerald-400" size={18} />
+                <h3 className="font-semibold text-sm">
+                  {remoteModal.mode === 'create' ? 'Connect FTP / FTPS / SFTP Server' : 'Edit Remote Server'}
+                </h3>
+              </div>
+              <button
+                onClick={() => setRemoteModal(prev => ({ ...prev, isOpen: false }))}
+                className="text-zinc-400 hover:text-zinc-200 p-1 rounded-md hover:bg-zinc-800 cursor-pointer"
+              >
+                <X size={15} />
+              </button>
+            </div>
+
+            <div className="p-5 bg-[#121215] flex flex-col gap-3.5 text-xs max-h-[75vh] overflow-y-auto">
+              {/* Protocol selector */}
+              <div className="flex flex-col gap-1.5">
+                <label className="text-[11px] font-medium text-zinc-400">Protocol</label>
+                <div className="grid grid-cols-3 gap-2">
+                  {([
+                    { id: 'sftp', label: 'SFTP (SSH)', port: '22', desc: 'Encrypted over SSH' },
+                    { id: 'ftps', label: 'FTPS (TLS)', port: '21', desc: 'Explicit FTP over TLS' },
+                    { id: 'ftp', label: 'FTP', port: '21', desc: 'Standard unencrypted FTP' },
+                  ] as const).map(opt => {
+                    const active = remoteModal.protocol === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => {
+                          setRemoteModal(prev => {
+                            const wasDefaultPort = (prev.protocol === 'sftp' && prev.port === '22') || (prev.protocol !== 'sftp' && prev.port === '21');
+                            return {
+                              ...prev,
+                              protocol: opt.id,
+                              port: wasDefaultPort ? opt.port : prev.port,
+                              authType: opt.id !== 'sftp' ? 'password' : prev.authType,
+                              testResult: null,
+                            };
+                          });
+                        }}
+                        className={`p-2.5 rounded-lg border text-left transition cursor-pointer ${
+                          active
+                            ? 'bg-emerald-950/40 border-emerald-500/60 text-white'
+                            : 'bg-zinc-900/70 border-zinc-800 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200'
+                        }`}
+                      >
+                        <div className="font-semibold text-xs flex items-center gap-1.5">
+                          {opt.id !== 'ftp' && <Lock size={11} className={active ? 'text-emerald-400' : 'text-zinc-500'} />}
+                          <span>{opt.label}</span>
+                        </div>
+                        <div className="text-[10px] text-zinc-500 mt-0.5">{opt.desc}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div className="col-span-2 flex flex-col gap-1">
+                  <label className="text-[11px] font-medium text-zinc-400">Display Name (optional)</label>
+                  <input
+                    type="text"
+                    value={remoteModal.name}
+                    placeholder="e.g. Production Web, NAS..."
+                    onChange={(e) => setRemoteModal(prev => ({ ...prev, name: e.target.value }))}
+                    className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] font-medium text-zinc-400">Port</label>
+                  <input
+                    type="number"
+                    value={remoteModal.port}
+                    onChange={(e) => setRemoteModal(prev => ({ ...prev, port: e.target.value, testResult: null }))}
+                    className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-xs font-mono text-zinc-100 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div className="col-span-2 flex flex-col gap-1">
+                  <label className="text-[11px] font-medium text-zinc-400">Host / IP Address</label>
+                  <input
+                    autoFocus
+                    type="text"
+                    value={remoteModal.host}
+                    placeholder="example.com or 192.168.1.50"
+                    onChange={(e) => setRemoteModal(prev => ({ ...prev, host: e.target.value, testResult: null }))}
+                    className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-xs font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] font-medium text-zinc-400">Username</label>
+                  <input
+                    type="text"
+                    value={remoteModal.username}
+                    placeholder={remoteModal.protocol === 'sftp' ? 'root' : 'anonymous'}
+                    onChange={(e) => setRemoteModal(prev => ({ ...prev, username: e.target.value, testResult: null }))}
+                    className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-xs font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              </div>
+
+              {remoteModal.protocol === 'sftp' && (
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] font-medium text-zinc-400">Authentication Method</label>
+                  <div className="flex gap-2">
+                    {([
+                      { id: 'password', label: 'Password' },
+                      { id: 'privateKey', label: 'SSH Private Key' },
+                      { id: 'agent', label: 'SSH Agent' },
+                    ] as const).map(auth => (
+                      <button
+                        key={auth.id}
+                        type="button"
+                        onClick={() => setRemoteModal(prev => ({ ...prev, authType: auth.id, testResult: null }))}
+                        className={`flex-1 py-1.5 px-2.5 rounded-lg border text-xs font-medium transition cursor-pointer ${
+                          remoteModal.authType === auth.id
+                            ? 'bg-blue-600/20 border-blue-500/60 text-blue-300'
+                            : 'bg-zinc-900 border-zinc-800 text-zinc-400 hover:text-zinc-200'
+                        }`}
+                      >
+                        {auth.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {remoteModal.authType === 'password' && (
+                <div className="flex flex-col gap-1">
+                  <label className="text-[11px] font-medium text-zinc-400">
+                    Password
+                    {remoteModal.mode === 'edit' && remoteModal.hasExistingPassword && (
+                      <span className="text-emerald-400/80 ml-1.5">(saved — leave blank to keep existing)</span>
+                    )}
+                  </label>
+                  <input
+                    type="password"
+                    value={remoteModal.password}
+                    placeholder={remoteModal.mode === 'edit' && remoteModal.hasExistingPassword ? '••••••••' : 'Enter password'}
+                    onChange={(e) => setRemoteModal(prev => ({ ...prev, password: e.target.value, testResult: null }))}
+                    className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              )}
+
+              {remoteModal.protocol === 'sftp' && remoteModal.authType === 'privateKey' && (
+                <div className="flex flex-col gap-2.5">
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] font-medium text-zinc-400">Private Key File</label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        value={remoteModal.privateKeyPath}
+                        placeholder="~/.ssh/id_ed25519 or .pem file"
+                        onChange={(e) => setRemoteModal(prev => ({ ...prev, privateKeyPath: e.target.value, testResult: null }))}
+                        className="flex-1 bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-xs font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!api?.remoteSelectKeyFile) return;
+                          const picked = await api.remoteSelectKeyFile();
+                          if (picked) {
+                            setRemoteModal(prev => ({ ...prev, privateKeyPath: picked, testResult: null }));
+                          }
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 flex items-center gap-1.5 cursor-pointer"
+                      >
+                        <KeyRound size={13} />
+                        <span>Browse...</span>
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <label className="text-[11px] font-medium text-zinc-400">
+                      Key Passphrase (optional)
+                      {remoteModal.mode === 'edit' && remoteModal.hasExistingPassphrase && (
+                        <span className="text-emerald-400/80 ml-1.5">(saved — leave blank to keep)</span>
+                      )}
+                    </label>
+                    <input
+                      type="password"
+                      value={remoteModal.passphrase}
+                      placeholder="Leave blank if key has no passphrase"
+                      onChange={(e) => setRemoteModal(prev => ({ ...prev, passphrase: e.target.value, testResult: null }))}
+                      className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-xs text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {remoteModal.protocol === 'sftp' && remoteModal.authType === 'agent' && (
+                <div className="p-2.5 rounded-lg bg-zinc-900/70 border border-zinc-800 text-[11px] text-zinc-400">
+                  Uses your system SSH agent ({IS_WIN ? 'Pageant / OpenSSH Agent' : 'SSH_AUTH_SOCK'}).
+                </div>
+              )}
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[11px] font-medium text-zinc-400">Initial Remote Path</label>
+                <input
+                  type="text"
+                  value={remoteModal.initialPath}
+                  placeholder="/ (or . for home directory)"
+                  onChange={(e) => setRemoteModal(prev => ({ ...prev, initialPath: e.target.value }))}
+                  className="bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-1.5 text-xs font-mono text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              {remoteModal.protocol === 'ftps' && (
+                <label className="flex items-center gap-2 cursor-pointer select-none text-zinc-300">
+                  <input
+                    type="checkbox"
+                    checked={remoteModal.rejectUnauthorized}
+                    onChange={(e) => setRemoteModal(prev => ({ ...prev, rejectUnauthorized: e.target.checked }))}
+                    className="rounded border-zinc-600 bg-zinc-900 accent-blue-500 cursor-pointer"
+                  />
+                  <span>Strictly verify TLS certificate (uncheck for self-signed NAS/LAN certs)</span>
+                </label>
+              )}
+
+              {remoteModal.testResult && (
+                <div className={`p-2.5 rounded-lg border text-xs flex items-start gap-2 ${
+                  remoteModal.testResult.success
+                    ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-200'
+                    : 'bg-rose-950/40 border-rose-500/40 text-rose-200'
+                }`}>
+                  {remoteModal.testResult.success
+                    ? <CheckCircle2 size={15} className="text-emerald-400 flex-shrink-0 mt-0.5" />
+                    : <AlertCircle size={15} className="text-rose-400 flex-shrink-0 mt-0.5" />}
+                  <span className="break-words">{remoteModal.testResult.message}</span>
+                </div>
+              )}
+
+              <div className="text-[10px] text-zinc-500 flex items-center gap-1.5">
+                <ShieldCheck size={12} className="text-emerald-500/80 flex-shrink-0" />
+                <span>Saved credentials are encrypted locally using OS keychain storage.</span>
+              </div>
+            </div>
+
+            <div className="p-3.5 border-t border-zinc-800 bg-[#141416] flex items-center justify-between gap-2 text-xs">
+              <button
+                type="button"
+                disabled={remoteModal.testing || remoteModal.saving}
+                onClick={testRemoteConnectionModal}
+                className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-200 border border-zinc-700 font-medium flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
+              >
+                {remoteModal.testing ? <Loader2 size={13} className="animate-spin text-blue-400" /> : <PlugZap size={13} className="text-emerald-400" />}
+                <span>{remoteModal.testing ? 'Testing...' : 'Test Connection'}</span>
+              </button>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={remoteModal.saving}
+                  onClick={() => setRemoteModal(prev => ({ ...prev, isOpen: false }))}
+                  className="px-3 py-1.5 rounded-lg text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 font-medium transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={remoteModal.saving}
+                  onClick={() => saveRemoteConnectionModal(false)}
+                  className="px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-100 border border-zinc-700 font-medium transition cursor-pointer disabled:opacity-50"
+                >
+                  Save
+                </button>
+                <button
+                  type="button"
+                  disabled={remoteModal.saving}
+                  onClick={() => saveRemoteConnectionModal(true)}
+                  className="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold flex items-center gap-1.5 shadow-sm transition cursor-pointer disabled:opacity-50"
+                >
+                  {remoteModal.saving && <Loader2 size={13} className="animate-spin" />}
+                  <span>Save & Connect</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Invisible offscreen layer for generating 3D and Splat previews in background */}
-      <Background3DSnapshotGenerator entries={dualPane ? [...entries, ...rightEntries] : entries} />
+      <Background3DSnapshotGenerator entries={(dualPane ? [...entries, ...rightEntries] : entries).filter(e => !isRemotePath(e.path))} />
       {/* Invisible background generator for automatic PDF previews */}
-      <BackgroundPdfSnapshotGenerator entries={dualPane ? [...entries, ...rightEntries] : entries} />
+      <BackgroundPdfSnapshotGenerator entries={(dualPane ? [...entries, ...rightEntries] : entries).filter(e => !isRemotePath(e.path))} />
     </div>
   );
 }

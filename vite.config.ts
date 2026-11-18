@@ -18,7 +18,7 @@ export default defineConfig({
           build: {
             outDir: 'dist-electron',
             rollupOptions: {
-              external: ['electron', 'fs', 'path', 'child_process', 'util'],
+              external: ['electron', 'fs', 'path', 'child_process', 'util', 'basic-ftp', 'ssh2-sftp-client', 'ssh2'],
             },
           },
         },

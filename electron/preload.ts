@@ -10,6 +10,41 @@ export interface DirEntry {
   mtime: string;
   ext?: string;
   missing?: boolean;
+  permissions?: string;
+}
+
+export interface RemoteConnectionInput {
+  id?: string;
+  name: string;
+  protocol: 'sftp' | 'ftp' | 'ftps';
+  host: string;
+  port: number;
+  username: string;
+  authType: 'password' | 'privateKey' | 'agent';
+  password?: string;
+  privateKeyPath?: string;
+  passphrase?: string;
+  initialPath?: string;
+  rejectUnauthorized?: boolean;
+  keepExistingSecrets?: boolean;
+}
+
+export interface RemoteConnectionInfo {
+  id: string;
+  name: string;
+  protocol: 'sftp' | 'ftp' | 'ftps';
+  host: string;
+  port: number;
+  username: string;
+  authType: 'password' | 'privateKey' | 'agent';
+  privateKeyPath?: string;
+  initialPath?: string;
+  rejectUnauthorized?: boolean;
+  hasPassword: boolean;
+  hasPassphrase: boolean;
+  connected: boolean;
+  lastError?: string;
+  createdAt: string;
 }
 
 export interface SizeResult {
@@ -98,15 +133,59 @@ const api = {
     sources: string[],
     target: string,
     isMove?: boolean,
-    action?: 'copy' | 'move' | 'createFolder',
+    action?: 'copy' | 'move' | 'createFolder' | 'delete' | 'rename',
     newFolderName?: string,
-    customDestFileName?: string
+    customDestFileName?: string,
+    newName?: string
   ): Promise<FileOpResult> =>
-    ipcRenderer.invoke('perform-elevated-op', { sources, target, isMove, action, newFolderName, customDestFileName }),
+    ipcRenderer.invoke('perform-elevated-op', { sources, target, isMove, action, newFolderName, customDestFileName, newName }),
 
   // Create a new folder in the given directory (with unique name "New folder", "New folder (2)" etc.)
   createFolder: (targetDir: string): Promise<any> =>
     ipcRenderer.invoke('create-folder', targetDir),
+
+  // Delete files or folders (moves to OS Trash by default unless permanent=true, or deletes from remote server)
+  deleteItems: (paths: string[], permanent = false): Promise<{
+    success: boolean;
+    requiresElevation?: boolean;
+    action?: 'delete';
+    sources?: string[];
+    target?: string;
+    items: Array<{ path: string; name: string; success: boolean; error?: string }>;
+    summary: string;
+    errors: string[];
+  }> =>
+    ipcRenderer.invoke('delete-items', { paths, permanent }),
+
+  // Rename a file or folder (local or remote)
+  renameItem: (targetPath: string, newName: string): Promise<{
+    success: boolean;
+    oldPath?: string;
+    newPath?: string;
+    requiresElevation?: boolean;
+    action?: 'rename';
+    sources?: string[];
+    target?: string;
+    newName?: string;
+    error?: string;
+  }> =>
+    ipcRenderer.invoke('rename-item', { targetPath, newName }),
+
+  // Remote FTP / FTPS / SFTP operations
+  remoteListConnections: (): Promise<RemoteConnectionInfo[]> =>
+    ipcRenderer.invoke('remote:list-connections'),
+  remoteSaveConnection: (input: RemoteConnectionInput): Promise<RemoteConnectionInfo> =>
+    ipcRenderer.invoke('remote:save-connection', input),
+  remoteDeleteConnection: (connectionId: string): Promise<boolean> =>
+    ipcRenderer.invoke('remote:delete-connection', connectionId),
+  remoteTestConnection: (input: RemoteConnectionInput): Promise<{ success: boolean; resolvedPath?: string; error?: string }> =>
+    ipcRenderer.invoke('remote:test-connection', input),
+  remoteConnect: (connectionId: string): Promise<{ success: boolean; rootUri?: string; initialUri?: string; error?: string }> =>
+    ipcRenderer.invoke('remote:connect', connectionId),
+  remoteDisconnect: (connectionId: string): Promise<void> =>
+    ipcRenderer.invoke('remote:disconnect', connectionId),
+  remoteSelectKeyFile: (): Promise<string | null> =>
+    ipcRenderer.invoke('remote:select-key-file'),
 
   // Get default Quick Access folders using proper Electron paths (respects symlinks/custom user folders)
   getDefaultQuickAccess: (): Promise<Array<{ label: string; path: string }>> =>

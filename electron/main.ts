@@ -8,6 +8,7 @@ import crypto from 'node:crypto';
 import { exec, execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import * as remote from './remote';
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -246,12 +247,16 @@ app.whenReady().then(() => {
       }
 
       if (targetPath) {
-        if (targetPath.startsWith('\\\\?\\')) {
-          targetPath = targetPath.slice(4);
-        } else if (targetPath.startsWith('//?/')) {
-          targetPath = targetPath.slice(4);
+        if (remote.isRemoteUri(targetPath)) {
+          targetPath = await remote.downloadRemoteToTempPreview(targetPath);
+        } else {
+          if (targetPath.startsWith('\\\\?\\')) {
+            targetPath = targetPath.slice(4);
+          } else if (targetPath.startsWith('//?/')) {
+            targetPath = targetPath.slice(4);
+          }
+          targetPath = path.normalize(targetPath);
         }
-        targetPath = path.normalize(targetPath);
       }
 
       const stat = await fs.stat(targetPath);
@@ -337,7 +342,10 @@ app.whenReady().then(() => {
   // Fast detector to distinguish 3D Gaussian Splats (.ply) from standard polygon meshes (.ply)
   ipcMain.handle('detect-ply-type', async (_event, filePath: string): Promise<'gaussian-splat' | '3d'> => {
     try {
-      const handle = await fs.open(filePath, 'r');
+      const localPath = remote.isRemoteUri(filePath)
+        ? await remote.downloadRemoteToTempPreview(filePath)
+        : filePath;
+      const handle = await fs.open(localPath, 'r');
       const buffer = Buffer.alloc(4096);
       const { bytesRead } = await handle.read(buffer, 0, 4096, 0);
       await handle.close();
@@ -369,6 +377,11 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit();
 });
 
+app.on('before-quit', () => {
+  remote.disconnectAll().catch(() => {});
+  remote.cleanupPreviewTempDir().catch(() => {});
+});
+
 // -------------------------
 // IPC Handlers - File System
 // -------------------------
@@ -386,6 +399,9 @@ interface DirEntry {
 }
 
 ipcMain.handle('list-directory', async (_event, dirPath: string): Promise<DirEntry[]> => {
+  if (remote.isRemoteUri(dirPath)) {
+    return remote.listRemoteDirectory(dirPath);
+  }
   try {
     const entries = await fs.readdir(dirPath, { withFileTypes: true });
     const results: DirEntry[] = [];
@@ -504,6 +520,9 @@ async function getFolderSizeRecursive(
 
 ipcMain.handle('get-folder-size', async (_event, dirPath: string) => {
   try {
+    if (remote.isRemoteUri(dirPath)) {
+      return await remote.getRemoteFolderSize(dirPath);
+    }
     const result = await getFolderSizeRecursive(dirPath);
     return result;
   } catch (e) {
@@ -811,17 +830,19 @@ async function createNewFolder(targetDir: string): Promise<string> {
 interface ElevatedItem {
   src?: string;
   dest: string;
-  action?: 'copy' | 'move' | 'createFolder';
+  action?: 'copy' | 'move' | 'createFolder' | 'delete' | 'rename';
   isDirectory?: boolean;
+  newName?: string;
 }
 
 async function performElevatedOperation(params: {
   sources?: string[];
   target: string;
   isMove?: boolean;
-  action?: 'copy' | 'move' | 'createFolder';
+  action?: 'copy' | 'move' | 'createFolder' | 'delete' | 'rename';
   newFolderName?: string;
   customDestFileName?: string;
+  newName?: string;
 }): Promise<{
   success: boolean;
   cancelled?: boolean;
@@ -836,6 +857,8 @@ async function performElevatedOperation(params: {
   const targetDir = normalizeTargetDirectory(params.target);
   const isMove = !!params.isMove;
   const isCreateFolder = params.action === 'createFolder';
+  const isDelete = params.action === 'delete';
+  const isRename = params.action === 'rename';
 
   const items: ElevatedItem[] = [];
 
@@ -856,6 +879,22 @@ async function performElevatedOperation(params: {
       dest,
       action: 'createFolder',
       isDirectory: true,
+    });
+  } else if (isDelete && params.sources && params.sources.length > 0) {
+    for (const src of params.sources) {
+      items.push({
+        src,
+        dest: src,
+        action: 'delete',
+      });
+    }
+  } else if (isRename && params.sources && params.sources.length > 0 && params.newName) {
+    const src = params.sources[0];
+    items.push({
+      src,
+      dest: path.join(path.dirname(src), params.newName),
+      action: 'rename',
+      newName: params.newName,
     });
   } else if (params.sources && params.sources.length > 0) {
     for (const src of params.sources) {
@@ -923,10 +962,15 @@ try {
         $dest = [string]$item.dest
         $act = [string]$item.action
         $isDir = [bool]$item.isDirectory
+        $newName = [string]$item.newName
 
         try {
             if ($act -eq 'createFolder') {
                 New-Item -ItemType Directory -LiteralPath $dest -Force | Out-Null
+            } elseif ($act -eq 'delete') {
+                Remove-Item -LiteralPath $src -Recurse -Force -ErrorAction Stop
+            } elseif ($act -eq 'rename') {
+                Rename-Item -LiteralPath $src -NewName $newName -Force -ErrorAction Stop
             } elseif ($act -eq 'move') {
                 if (Test-Path -LiteralPath $dest) {
                     Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction SilentlyContinue
@@ -1041,7 +1085,11 @@ try {
             items: resultData.items,
             summary: isCreateFolder
               ? `Created folder "${path.basename(items[0]?.dest)}"`
-              : `Successfully ${isMove ? 'moved' : 'copied'} ${resultData.items?.length || 1} items with administrator privileges.`
+              : isDelete
+                ? `Deleted ${resultData.items?.length || 1} item(s) with administrator privileges.`
+                : isRename
+                  ? `Renamed item with administrator privileges.`
+                  : `Successfully ${isMove ? 'moved' : 'copied'} ${resultData.items?.length || 1} items with administrator privileges.`
           });
         } else {
           const errMsg = resultData?.error || `Elevation process exited with code ${code}`;
@@ -1082,7 +1130,56 @@ ipcMain.handle('perform-elevated-op', async (_e, params) => {
   return performElevatedOperation(params);
 });
 
+const sendCopyProgress = (info: remote.TransferProgressInfo) => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('copy-progress', info);
+  }
+};
+
 handleFileOp('copy-files', async (_e, { sources, target }: { sources: string[]; target: string }) => {
+  const targetIsRemote = remote.isRemoteUri(target);
+  const remoteSources = sources.filter(s => remote.isRemoteUri(s));
+  const localSources = sources.filter(s => !remote.isRemoteUri(s));
+
+  if (targetIsRemote || remoteSources.length > 0) {
+    if (targetIsRemote && localSources.length > 0 && remoteSources.length === 0) {
+      return remote.transferLocalToRemote(localSources, target, false, removeItem, sendCopyProgress);
+    }
+    if (!targetIsRemote && remoteSources.length > 0 && localSources.length === 0) {
+      return remote.transferRemoteToLocal(remoteSources, normalizeTargetDirectory(target), false, getUniqueDestination, sendCopyProgress);
+    }
+    if (targetIsRemote && remoteSources.length > 0 && localSources.length === 0) {
+      return remote.transferRemoteToRemote(remoteSources, target, false, sendCopyProgress);
+    }
+    // Mixed local + remote sources
+    const allItems: any[] = [];
+    const allErrors: string[] = [];
+    if (localSources.length > 0) {
+      const r1 = targetIsRemote
+        ? await remote.transferLocalToRemote(localSources, target, false, removeItem, sendCopyProgress)
+        : null;
+      if (r1) {
+        allItems.push(...(r1.items || []));
+        allErrors.push(...(r1.errors || []));
+      }
+    }
+    if (remoteSources.length > 0) {
+      const r2 = targetIsRemote
+        ? await remote.transferRemoteToRemote(remoteSources, target, false, sendCopyProgress)
+        : await remote.transferRemoteToLocal(remoteSources, normalizeTargetDirectory(target), false, getUniqueDestination, sendCopyProgress);
+      allItems.push(...(r2.items || []));
+      allErrors.push(...(r2.errors || []));
+    }
+    return {
+      success: allErrors.length === 0,
+      type: 'copy',
+      target,
+      items: allItems,
+      summary: allErrors.length === 0 ? `Copied ${allItems.length} items` : allErrors[0],
+      errors: allErrors,
+    };
+  }
+
   let targetDir = normalizeTargetDirectory(target);
   try {
     const tStat = await fs.stat(targetDir);
@@ -1191,6 +1288,44 @@ handleFileOp('copy-files', async (_e, { sources, target }: { sources: string[]; 
 });
 
 handleFileOp('move-files', async (_e, { sources, target }: { sources: string[]; target: string }) => {
+  const targetIsRemote = remote.isRemoteUri(target);
+  const remoteSources = sources.filter(s => remote.isRemoteUri(s));
+  const localSources = sources.filter(s => !remote.isRemoteUri(s));
+
+  if (targetIsRemote || remoteSources.length > 0) {
+    if (targetIsRemote && localSources.length > 0 && remoteSources.length === 0) {
+      return remote.transferLocalToRemote(localSources, target, true, removeItem, sendCopyProgress);
+    }
+    if (!targetIsRemote && remoteSources.length > 0 && localSources.length === 0) {
+      return remote.transferRemoteToLocal(remoteSources, normalizeTargetDirectory(target), true, getUniqueDestination, sendCopyProgress);
+    }
+    if (targetIsRemote && remoteSources.length > 0 && localSources.length === 0) {
+      return remote.transferRemoteToRemote(remoteSources, target, true, sendCopyProgress);
+    }
+    const allItems: any[] = [];
+    const allErrors: string[] = [];
+    if (localSources.length > 0 && targetIsRemote) {
+      const r1 = await remote.transferLocalToRemote(localSources, target, true, removeItem, sendCopyProgress);
+      allItems.push(...(r1.items || []));
+      allErrors.push(...(r1.errors || []));
+    }
+    if (remoteSources.length > 0) {
+      const r2 = targetIsRemote
+        ? await remote.transferRemoteToRemote(remoteSources, target, true, sendCopyProgress)
+        : await remote.transferRemoteToLocal(remoteSources, normalizeTargetDirectory(target), true, getUniqueDestination, sendCopyProgress);
+      allItems.push(...(r2.items || []));
+      allErrors.push(...(r2.errors || []));
+    }
+    return {
+      success: allErrors.length === 0,
+      type: 'move',
+      target,
+      items: allItems,
+      summary: allErrors.length === 0 ? `Moved ${allItems.length} items` : allErrors[0],
+      errors: allErrors,
+    };
+  }
+
   let targetDir = normalizeTargetDirectory(target);
   try {
     const tStat = await fs.stat(targetDir);
@@ -1321,6 +1456,9 @@ handleFileOp('move-files', async (_e, { sources, target }: { sources: string[]; 
 });
 
 handleFileOp('create-folder', async (_e, targetDir: string) => {
+  if (remote.isRemoteUri(targetDir)) {
+    return remote.createRemoteFolder(targetDir);
+  }
   try {
     const newPath = await createNewFolder(targetDir);
     return newPath;
@@ -1336,6 +1474,131 @@ handleFileOp('create-folder', async (_e, targetDir: string) => {
     }
     throw err;
   }
+});
+
+handleFileOp('delete-items', async (_e, { paths, permanent }: { paths: string[]; permanent?: boolean }) => {
+  if (!Array.isArray(paths) || paths.length === 0) {
+    return { success: false, items: [], summary: 'No items selected.', errors: ['No items selected.'] };
+  }
+
+  const remotePaths = paths.filter(p => remote.isRemoteUri(p));
+  const localPaths = paths.filter(p => !remote.isRemoteUri(p));
+
+  const results: Array<{ path: string; name: string; success: boolean; error?: string }> = [];
+  const errors: string[] = [];
+
+  if (remotePaths.length > 0) {
+    const remoteRes = await remote.deleteRemoteItems(remotePaths);
+    results.push(...remoteRes.items);
+    errors.push(...remoteRes.errors);
+  }
+
+  for (const p of localPaths) {
+    const name = path.basename(p) || p;
+    try {
+      await fs.access(p);
+      if (permanent) {
+        await removeItem(p);
+      } else {
+        await shell.trashItem(p);
+      }
+      results.push({ path: p, name, success: true });
+    } catch (err: any) {
+      const friendlyMsg = friendlyErrorMessage(err, p);
+      errors.push(friendlyMsg);
+      results.push({ path: p, name, success: false, error: friendlyMsg });
+    }
+  }
+
+  const successCount = results.filter(r => r.success).length;
+  const failureCount = results.length - successCount;
+
+  if (successCount === 0 && localPaths.length > 0 && remotePaths.length === 0) {
+    const isPermissionError = errors.some(e => e.includes('Permission denied') || e.includes('administrator'));
+    if (isPermissionError) {
+      return {
+        success: false,
+        requiresElevation: true,
+        action: 'delete',
+        sources: localPaths,
+        target: path.dirname(localPaths[0]),
+        summary: `Administrator permission is required to delete "${path.basename(localPaths[0])}".`,
+        errors,
+      };
+    }
+  }
+
+  const verb = remotePaths.length > 0 && localPaths.length === 0
+    ? 'Deleted'
+    : (permanent ? 'Permanently deleted' : 'Moved to Trash');
+  const summary = failureCount === 0
+    ? (successCount === 1 ? `${verb}: "${results[0].name}"` : `${verb}: ${successCount} items`)
+    : `${verb} ${successCount} of ${results.length} items (${failureCount} failed).`;
+
+  return {
+    success: failureCount === 0,
+    items: results,
+    summary,
+    errors,
+  };
+});
+
+handleFileOp('rename-item', async (_e, { targetPath, newName }: { targetPath: string; newName: string }) => {
+  if (!targetPath || !newName) {
+    return { success: false, error: 'Target path and new name are required.' };
+  }
+  if (remote.isRemoteUri(targetPath)) {
+    return remote.renameRemoteItem(targetPath, newName);
+  }
+  const cleanName = newName.trim().replace(/[\\/]/g, '');
+  if (!cleanName || cleanName === '.' || cleanName === '..') {
+    return { success: false, error: 'Invalid file or folder name.' };
+  }
+  const parentDir = path.dirname(targetPath);
+  const destPath = path.join(parentDir, cleanName);
+  if (samePath(targetPath, destPath)) {
+    return { success: true, oldPath: targetPath, newPath: destPath };
+  }
+  try {
+    try {
+      await fs.access(destPath);
+      return { success: false, error: `An item named "${cleanName}" already exists.` };
+    } catch {}
+    await fs.rename(targetPath, destPath);
+    return { success: true, oldPath: targetPath, newPath: destPath };
+  } catch (err: any) {
+    if (err.code === 'EPERM' || err.code === 'EACCES') {
+      return {
+        success: false,
+        requiresElevation: true,
+        action: 'rename',
+        sources: [targetPath],
+        target: parentDir,
+        newName: cleanName,
+        error: 'Administrator permission required to rename this item.',
+      };
+    }
+    return { success: false, error: friendlyErrorMessage(err, targetPath) };
+  }
+});
+
+// Remote FTP / FTPS / SFTP connection handlers
+ipcMain.handle('remote:list-connections', async () => remote.listConnections());
+ipcMain.handle('remote:save-connection', async (_e, input: remote.RemoteConnectionInput) => remote.saveConnection(input));
+ipcMain.handle('remote:delete-connection', async (_e, connectionId: string) => remote.deleteConnection(connectionId));
+ipcMain.handle('remote:test-connection', async (_e, input: remote.RemoteConnectionInput) => remote.testConnection(input));
+ipcMain.handle('remote:connect', async (_e, connectionId: string) => remote.connectConnection(connectionId));
+ipcMain.handle('remote:disconnect', async (_e, connectionId: string) => remote.disconnectConnection(connectionId));
+ipcMain.handle('remote:select-key-file', async () => {
+  if (!mainWindow) return null;
+  const sshDir = path.join(os.homedir(), '.ssh');
+  const result = await dialog.showOpenDialog(mainWindow, {
+    title: 'Select SSH Private Key File',
+    defaultPath: fsSync.existsSync(sshDir) ? sshDir : os.homedir(),
+    properties: ['openFile', 'showHiddenFiles'],
+  });
+  if (result.canceled || result.filePaths.length === 0) return null;
+  return result.filePaths[0];
 });
 
 ipcMain.handle('select-folder', async () => {
@@ -1395,16 +1658,22 @@ ipcMain.handle('get-entries-stats', async (_e, filePaths: string[]): Promise<Dir
 
 handleFileOp('save-file-as', async (_e, sourcePath: string) => {
   if (!mainWindow) return { canceled: true };
-  try {
-    const stat = await fs.stat(sourcePath);
-    if (stat.isDirectory()) {
-      return { success: false, error: 'Cannot "Save as" a directory. Please select a file.' };
+  const isRemote = remote.isRemoteUri(sourcePath);
+
+  if (!isRemote) {
+    try {
+      const stat = await fs.stat(sourcePath);
+      if (stat.isDirectory()) {
+        return { success: false, error: 'Cannot "Save as" a directory. Please select a file.' };
+      }
+    } catch (err: any) {
+      return { success: false, error: `Source file does not exist or cannot be accessed: ${err?.message || err}` };
     }
-  } catch (err: any) {
-    return { success: false, error: `Source file does not exist or cannot be accessed: ${err?.message || err}` };
   }
 
-  const ext = path.extname(sourcePath).replace(/^\./, '');
+  const parsedRemote = isRemote ? remote.parseRemoteUri(sourcePath) : null;
+  const sourceFileName = parsedRemote ? path.posix.basename(parsedRemote.remotePath) : path.basename(sourcePath);
+  const ext = path.extname(sourceFileName).replace(/^\./, '');
   const filters: Electron.FileFilter[] = [];
   if (ext) {
     filters.push({ name: `${ext.toUpperCase()} File (*.${ext})`, extensions: [ext] });
@@ -1413,7 +1682,7 @@ handleFileOp('save-file-as', async (_e, sourcePath: string) => {
 
   const result = await dialog.showSaveDialog(mainWindow, {
     title: 'Save As',
-    defaultPath: sourcePath,
+    defaultPath: isRemote ? path.join(app.getPath('downloads'), sourceFileName) : sourcePath,
     filters,
     properties: ['showOverwriteConfirmation', 'createDirectory'],
   });
@@ -1425,7 +1694,7 @@ handleFileOp('save-file-as', async (_e, sourcePath: string) => {
   const destPath = result.filePath;
 
   // Check if destination is exactly the same as source
-  if (samePath(sourcePath, destPath)) {
+  if (!isRemote && samePath(sourcePath, destPath)) {
     return {
       success: false,
       error: 'Destination is identical to the source file.',
@@ -1434,7 +1703,11 @@ handleFileOp('save-file-as', async (_e, sourcePath: string) => {
 
   try {
     await fs.mkdir(path.dirname(destPath), { recursive: true });
-    await copySingleFile(sourcePath, destPath);
+    if (isRemote) {
+      await remote.downloadRemoteToLocalFile(sourcePath, destPath, sendCopyProgress);
+    } else {
+      await copySingleFile(sourcePath, destPath);
+    }
     return {
       success: true,
       sourcePath,
@@ -1463,16 +1736,25 @@ handleFileOp('save-file-as', async (_e, sourcePath: string) => {
 });
 
 ipcMain.handle('open-path', async (_e, target: string) => {
+  if (remote.isRemoteUri(target)) {
+    const localTemp = await remote.downloadRemoteToTempPreview(target);
+    await shell.openPath(localTemp);
+    return;
+  }
   await shell.openPath(target);
 });
 
 ipcMain.handle('show-in-explorer', async (_e, target: string) => {
+  if (remote.isRemoteUri(target)) return;
   shell.showItemInFolder(target);
 });
 
 // Get logical drives on Windows using PowerShell (fast and reliable)
 ipcMain.handle('read-text-file', async (_e, filePath: string): Promise<string> => {
   try {
+    if (remote.isRemoteUri(filePath)) {
+      return await remote.readRemoteTextFile(filePath, 1024 * 1024);
+    }
     // Limit size for safety (e.g. 1MB)
     const maxSize = 1024 * 1024;
     const stat = await fs.stat(filePath);
@@ -1793,7 +2075,7 @@ async function generateThumbnailFile(filePath: string, cachedPath: string, ext: 
 }
 
 ipcMain.handle('get-thumbnail', async (_e, { filePath, mtime, size }: { filePath: string; mtime: string; size?: number }): Promise<{ url?: string; hasPreview: boolean }> => {
-  if (!filePath) return { hasPreview: false };
+  if (!filePath || remote.isRemoteUri(filePath)) return { hasPreview: false };
   const ext = path.extname(filePath).toLowerCase();
   if (!PREVIEWABLE_EXTENSIONS.has(ext)) {
     return { hasPreview: false };
@@ -1857,6 +2139,7 @@ ipcMain.handle('get-thumbnails-batch', async (_e, items: Array<{ filePath: strin
 
 // Fast snippet reader for text & code previews (reads up to first ~800 bytes)
 ipcMain.handle('read-file-snippet', async (_e, filePath: string, maxChars = 240): Promise<string> => {
+  if (!filePath || remote.isRemoteUri(filePath)) return '';
   try {
     const handle = await fs.open(filePath, 'r');
     const buffer = Buffer.alloc(1024);
